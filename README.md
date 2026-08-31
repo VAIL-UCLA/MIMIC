@@ -197,8 +197,23 @@ uv run python -m mimic.action_augmentation.augment_action \
 ```
 
 Each clip reads an action-label sidecar (`.npy` / `.npz` / `.json`) beside the
-video and writes an augmented one alongside the generated clip. The trajectory
-math is pure numpy and covered by `tests/`; see
+video and writes an augmented one alongside the generated clip.
+
+The depth model behind the view synthesis is relative, not metric, so rendering
+an offset expressed in meters needs a conversion factor. Rather than tuning it
+by eye, read it off the labels — they already record how far the robot actually
+moved:
+
+```bash
+uv run python -m mimic.action_augmentation.calibrate_scale --input clip.mp4
+#   ORACLE SCALE : 2.5012 depth units / meter
+```
+
+Feed that back as `--scale`. It is a property of the camera and the depth model,
+not of the clip, so calibrate once and keep it fixed. (Labels are metric and
+exact regardless — `--scale` affects only the rendered video.)
+
+The trajectory and calibration math is pure numpy and covered by `tests/`; see
 [`mimic/action_augmentation/README.md`](mimic/action_augmentation/README.md) for
 the label schema, the two modes and the `--scale` calibration.
 

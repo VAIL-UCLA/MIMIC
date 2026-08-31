@@ -262,8 +262,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     render = parser.add_argument_group("rendering")
     render.add_argument("--scale", type=float, default=1.0,
                         help="Depth units per meter. TrajectoryCrafter's depth is not metric, "
-                             "so a lateral offset in meters must be converted; calibrate this "
-                             "once for your camera and keep it fixed.")
+                             "so a lateral offset in meters must be converted. Do not guess it: "
+                             "run `python -m mimic.action_augmentation.calibrate_scale` to read "
+                             "it off the action labels, then keep it fixed.")
     render.add_argument("--radius_scale", type=float, default=1.0)
     render.add_argument("--stride", type=int, default=1)
     render.add_argument("--diffusion_inference_steps", type=int, default=50)
