@@ -208,16 +208,20 @@ video and writes an augmented one alongside the generated clip.
 The depth model behind the view synthesis is relative, not metric, so rendering
 an offset expressed in meters needs a conversion factor. Rather than tuning it
 by eye, read it off the labels — they already record how far the robot actually
-moved:
+moved. DepthCrafter normalizes disparity over the frames it is given, so those
+units depend on the clip: each one is calibrated separately and keeps its own
+scale in a sidecar.
 
 ```bash
-uv run python -m mimic.action_augmentation.calibrate_scale --input clip.mp4
-#   ORACLE SCALE : 2.5012 depth units / meter
+uv run python -m mimic.action_augmentation.calibrate_clips \
+    --input 'assets/clips/*/rgb_pinhole.mp4' --fps 20
+#   rgb_pinhole.mp4    2.5012    0.5%    0.097    0.0%    39
+#   -> writes rgb_pinhole.scale.json beside each clip
 ```
 
-Feed that back as `--scale`. It is a property of the camera and the depth model,
-not of the clip, so calibrate once and keep it fixed. (Labels are metric and
-exact regardless — `--scale` affects only the rendered video.)
+`augment_action` reads that sidecar by default (`--scale auto`), and refuses to
+render rather than guess if a clip has not been calibrated. (Labels are metric
+and exact regardless — the scale affects only the rendered video.)
 
 The trajectory and calibration math is pure numpy and covered by `tests/`; see
 [`mimic/action_augmentation/README.md`](mimic/action_augmentation/README.md) for

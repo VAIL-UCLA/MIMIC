@@ -13,3 +13,6 @@ mimic/action_augmentation/models/
 
 # Private map from published clip UIDs back to their source scenario ids.
 .uid_map.json
+
+# Cached DepthCrafter stacks — large, and reproducible from the clips.
+.depth_cache/

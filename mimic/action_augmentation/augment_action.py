@@ -40,6 +40,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from . import labels as label_io
+from . import scales as scale_io
 from . import trajectory as tj
 
 #: This package.
@@ -260,11 +261,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                      help="Use --seed directly instead of mixing in the input path.")
 
     render = parser.add_argument_group("rendering")
-    render.add_argument("--scale", type=float, default=1.0,
-                        help="Depth units per meter. TrajectoryCrafter's depth is not metric, "
-                             "so a lateral offset in meters must be converted. Do not guess it: "
-                             "run `python -m mimic.action_augmentation.calibrate_scale` to read "
-                             "it off the action labels, then keep it fixed.")
+    render.add_argument("--scale", type=str, default=scale_io.AUTO,
+                        help="Depth units per meter, or 'auto' to read the clip's "
+                             "<stem>.scale.json sidecar. TrajectoryCrafter's depth is not "
+                             "metric, and its units depend on the clip, so a lateral offset "
+                             "in meters must be converted per clip. Do not guess it: run "
+                             "`python -m mimic.action_augmentation.calibrate_clips` to read "
+                             "it off that clip's recorded poses.")
+    render.add_argument("--scale_file", type=str, default=None,
+                        help="Scale sidecar to use instead of the one beside the clip.")
     render.add_argument("--radius_scale", type=float, default=1.0)
     render.add_argument("--stride", type=int, default=1)
     render.add_argument("--diffusion_inference_steps", type=int, default=50)
@@ -370,11 +375,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    return _render(args, tc_root, input_path, output_path, lateral, yaw, seed)
+    # Resolve before loading any model: rendering at an unverified scale
+    # silently mis-sizes the maneuver, which is worse than not rendering.
+    try:
+        scale, provenance = scale_io.resolve_scale(
+            input_path,
+            args.scale,
+            window=scale_io.make_window(TC_VIDEO_LENGTH, args.stride),
+            path=args.scale_file,
+        )
+    except (scale_io.ScaleNotFound, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"Scale:    {scale:.4f} depth units/m ({provenance})")
+
+    return _render(args, tc_root, input_path, output_path, lateral, yaw, seed, scale)
 
 
 def _render(args, tc_root: Path, input_path: Path, output_path: Path,
-            lateral: np.ndarray, yaw: np.ndarray, seed: int) -> int:
+            lateral: np.ndarray, yaw: np.ndarray, seed: int, scale: float) -> int:
     """Run TrajectoryCrafter with our camera path bound in place of its own."""
     import torch
 
@@ -437,7 +456,7 @@ def _render(args, tc_root: Path, input_path: Path, output_path: Path,
 
         crafter = TrajCrafter(opts)
         # Bind our camera path in place of upstream's pose generator.
-        crafter.get_poses = make_get_poses(lateral, yaw, args.scale).__get__(crafter)
+        crafter.get_poses = make_get_poses(lateral, yaw, scale).__get__(crafter)
         crafter.infer_gradual(opts)
     finally:
         os.chdir(cwd)

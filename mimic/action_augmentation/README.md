@@ -60,7 +60,9 @@ derived heading, and neither knows anything about action labels.
 | `labels.py` | ours | Sidecar I/O (`.npy` / `.npz` / `.json`) |
 | `augment_action.py` | ours | CLI and API |
 | `calibrate.py` | ours | Oracle-scale math: linear scale solve, affine-in-disparity fit |
-| `calibrate_scale.py` | ours | Calibration CLI — video + labels in, oracle scale out |
+| `calibrate_clips.py` | ours | Per-clip calibration CLI — writes a `.scale.json` beside each clip |
+| `calibrate_scale.py` | ours | Corpus-level calibration CLI — one number over a set of clips |
+| `scales.py` | ours | Scale sidecar I/O, and how `--scale auto` resolves |
 
 ## Setup
 
@@ -142,24 +144,53 @@ has to be converted into the reconstruction's units before it can be rendered.
 maneuver.
 
 Do not guess it — the action labels already record how far the robot actually
-moved, so the scale can be read off ground truth:
+moved, so the scale can be read off ground truth.
 
-```bash
-# depth computed with DepthCrafter, exactly as the renderer would
-uv run python -m mimic.action_augmentation.calibrate_scale --input clip.mp4
+**The scale is per clip, not a constant of the camera.** DepthCrafter normalizes
+disparity over the frames it is handed:
 
-# reuse a precomputed depth stack (N, H, W) — no GPU needed
-uv run python -m mimic.action_augmentation.calibrate_scale \
-    --input clip.mp4 --depth depth.npy
-
-# calibrate across a corpus and save the report
-uv run python -m mimic.action_augmentation.calibrate_scale \
-    --input 'data/*/front_*.mp4' --depth_dir depths/ --out scale.json
+```python
+depths = (res - res.min()) / (res.max() - res.min())    # models/infer.py
+depths = 10000.0 / (depths * 3900)
 ```
 
-It prints the number to pass straight back as `--scale`. The scale is a property
-of the camera and the depth model, not of the clip, so calibrate once over a
-handful of clips and keep it fixed.
+`min` and `max` are taken over the whole batch, so the units are fixed by the
+depth range that happens to be in *that* window of *that* clip. The same camera
+and the same model give one scale down a long street and a different one in a
+narrow alley. So calibrate each clip and store the result beside it:
+
+```bash
+# one clip; writes clip.scale.json next to it
+uv run python -m mimic.action_augmentation.calibrate_clips --input clip.mp4
+
+# a corpus, caching depth so a re-run costs no GPU time
+uv run python -m mimic.action_augmentation.calibrate_clips \
+    --input 'assets/clips/*/rgb_pinhole.mp4' --fps 20
+
+# reuse depth stacks computed elsewhere — no GPU at all
+uv run python -m mimic.action_augmentation.calibrate_clips \
+    --input 'clips/*.mp4' --depth_cache depths/ --no_recompute
+```
+
+`augment_action` then reads each clip's sidecar automatically (`--scale auto` is
+the default), so the number never has to be carried by hand:
+
+```json
+{
+  "scale": 2.5012,
+  "units": "depth units per meter",
+  "window": {"start": 0, "length": 49, "stride": 1},
+  "calibration": {"n_pairs": 39, "mad_ratio": 0.0046, "residual_scale_only": 0.097}
+}
+```
+
+The stored `window` is the leading 49 frames the renderer actually consumes.
+Rendering a different window means the depth was normalized differently, so the
+scale no longer applies — a mismatch is reported rather than silently used.
+
+`calibrate_scale` is the older single-number driver. It is still useful for
+asking "how much do my clips agree?" across a corpus, but a corpus-wide number
+is only a good approximation when that spread is small.
 
 ### How it works
 

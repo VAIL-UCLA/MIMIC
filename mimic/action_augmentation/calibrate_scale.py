@@ -23,9 +23,11 @@ Usage:
     python -m mimic.action_augmentation.calibrate_scale \\
         --input 'data/*/front_*.mp4' --depth_dir depths/ --out scale.json
 
-Feed the reported number back as ``--scale``. It is a property of the camera and
-the depth model, not of the clip, so calibrate once over a handful of clips and
-keep it fixed.
+This reports one number across everything it is given, which is useful for
+asking how much a corpus agrees. It is *not* a camera constant: DepthCrafter
+normalizes disparity over the frames it is handed, so the units depend on the
+clip. For the per-clip scales the renderer actually consumes, use
+:mod:`.calibrate_clips`, which writes a sidecar beside each clip.
 """
 
 from __future__ import annotations
