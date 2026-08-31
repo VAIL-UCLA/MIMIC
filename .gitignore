@@ -7,6 +7,5 @@ dist/
 .pytest_cache/
 .ruff_cache/
 
-# Vendored reference checkout — machine-specific absolute symlink.
-# Recreate with: ln -sfn /path/to/Light-A-Video mimic/appearance_augmentation/Light-A-Video
-mimic/appearance_augmentation/Light-A-Video
+# Downloaded model weights (IC-Light, YOLO) — fetched on first run.
+mimic/appearance_augmentation/models/

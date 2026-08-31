@@ -13,10 +13,13 @@ MIMIC is a **goal-free, long-context** sidewalk navigation policy: it takes a sh
 This repository is managed with [uv](https://docs.astral.sh/uv/). Install uv, then:
 
 ```bash
-git clone https://github.com/VAIL-UCLA/MIMIC.git
+git clone --recurse-submodules https://github.com/VAIL-UCLA/MIMIC.git
 cd MIMIC
 uv sync
 ```
+
+Already cloned without `--recurse-submodules`? Run
+`git submodule update --init --recursive`.
 
 `uv sync` creates `.venv` on CPython 3.11.11 (pinned in `.python-version`) and
 installs `mimic` in editable mode. Run anything with `uv run`:
@@ -95,25 +98,34 @@ grow the training set from recorded sidewalk footage.
 
 ### Appearance augmentation
 
-Built on **[Light-A-Video](https://github.com/bcmi/Light-A-Video)** (ICCV 2025),
-a training-free video relighting framework. Geometry, frame count, resolution
-and fps are preserved, so an augmented clip stays frame-aligned with the action
-labels of the original — only appearance changes.
+Re-renders a clip under new lighting, weather and time-of-day conditions.
+Geometry, frame count, resolution and fps are preserved, so an augmented clip
+stays frame-aligned with the action labels of the original — only appearance
+changes.
 
-Light-A-Video is used as an external checkout rather than vendored. Clone it,
-fetch the IC-Light weights into its `models/`, then link it in:
+The relighting core is [Light-A-Video](https://github.com/bcmi/Light-A-Video)
+(ICCV 2025), included as a **git submodule and used unmodified**:
 
-```bash
-git clone https://github.com/bcmi/Light-A-Video.git /path/to/Light-A-Video
-ln -sfn /path/to/Light-A-Video mimic/appearance_augmentation/Light-A-Video
+```
+mimic/appearance_augmentation/third_party/Light-A-Video   ← upstream, pinned
 ```
 
-The symlink is gitignored because the path is machine-specific; `--lav_root` and
-`$LAV_ROOT` work in its place. The SD, AnimateDiff and Wan2.1 weights download
-automatically on first run.
+Everything around it is ours. Upstream's entry points target short single-shot
+demo clips — one hand-written prompt per YAML, a center-crop to a fixed
+resolution, an 8 fps write — none of which suits navigation training data, where
+cropping breaks the frame-to-action correspondence. Our layer adds:
+
+- a **171-prompt pool** across 15 selectable categories, sampled per segment, so
+  one clip sweeps several lighting conditions instead of one;
+- **YOLOv8 person detection** with soft-mask blending, so pedestrians are not
+  smeared or deformed by relighting (with cascade and full-frame fallbacks);
+- **native resolution and fps preservation**, plus high-frequency detail carried
+  over from the source;
+- **arbitrary-length video** via segment/chunk scheduling and reassembly;
+- **batch and multi-GPU drivers**, with per-video seed derivation for diversity.
 
 ```bash
-uv sync --extra appearance
+uv sync --extra appearance   # torch, diffusers, ultralytics — needs a CUDA GPU
 
 # 4 lighting conditions sampled from the pool, 8s of video each
 uv run python -m mimic.appearance_augmentation.augment_video \
@@ -127,8 +139,10 @@ uv run python -m mimic.appearance_augmentation.augment_video \
 uv run python -m mimic.appearance_augmentation.augment_video --input clip.mp4 --dry_run
 ```
 
+Weights download on first run into `mimic/appearance_augmentation/models/`.
 See [`mimic/appearance_augmentation/README.md`](mimic/appearance_augmentation/README.md)
-for the prompt categories, quality knobs and the batching API.
+for the full upstream-vs-ours comparison, prompt categories, quality knobs and
+the batching API.
 
 ## Citation
 
@@ -145,7 +159,14 @@ If you find MIMIC helpful for your research, please cite:
 
 ## Acknowledgements
 
-Appearance augmentation is built on [Light-A-Video](https://github.com/bcmi/Light-A-Video):
+Appearance augmentation builds on **[Light-A-Video](https://github.com/bcmi/Light-A-Video)**
+(Zhou, Bu, Ling et al., ICCV 2025), a training-free video relighting framework.
+It is included as a git submodule and used **unmodified** — IC-Light relighting,
+the Wan2.1 / AnimateDiff backbones, Consistent Light Attention and Progressive
+Light Fusion are all theirs. The sidewalk-specific pipeline around it (prompt
+pool, YOLO foreground preservation, resolution/fps preservation, long-video
+scheduling, batch drivers) is ours. We thank the authors for releasing their
+code under the Apache 2.0 license.
 
 ```bibtex
 @InProceedings{Zhou_2025_ICCV,

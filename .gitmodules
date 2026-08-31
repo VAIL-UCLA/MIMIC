@@ -1,0 +1,4 @@
+[submodule "mimic/appearance_augmentation/third_party/Light-A-Video"]
+	path = mimic/appearance_augmentation/third_party/Light-A-Video
+	url = https://github.com/bcmi/Light-A-Video.git
+	branch = main

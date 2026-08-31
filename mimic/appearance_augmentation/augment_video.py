@@ -1,8 +1,9 @@
 """Appearance augmentation: video in, relit video out.
 
-Wraps the vendored Light-A-Video pipeline (linked at
-``mimic/appearance_augmentation/Light-A-Video``) and drives it with the MIMIC
-prompt store in :mod:`mimic.appearance_augmentation.prompts`.
+Drives MIMIC's relighting pipeline (:mod:`lav_randomize_video`, in this folder)
+with the prompt store in :mod:`mimic.appearance_augmentation.prompts`. The
+diffusion backbone comes from the Light-A-Video submodule under
+``third_party/Light-A-Video``, which is used unmodified.
 
 The output video keeps the input's frame count, resolution and fps, so an
 augmented clip stays frame-aligned with the action labels of the original.
@@ -29,8 +30,7 @@ Usage:
         --input clip.mp4 --output clip_aug.mp4 --dry_run
 
 Requires the Light-A-Video runtime (torch, diffusers, ultralytics, …) and a CUDA
-GPU. Install with ``uv sync --extra appearance``, or run inside the upstream
-``lav`` conda environment.
+GPU: ``uv sync --extra appearance``.
 """
 
 from __future__ import annotations
@@ -45,40 +45,50 @@ from types import SimpleNamespace
 
 from . import prompts as prompt_store
 
-#: Fallback location of the Light-A-Video checkout (the sibling symlink).
-DEFAULT_LAV_ROOT = Path(__file__).resolve().parent / "Light-A-Video"
+#: This package — holds MIMIC's own lav_*.py pipeline scripts.
+PACKAGE_DIR = Path(__file__).resolve().parent
+
+#: Light-A-Video submodule (upstream code, unmodified).
+DEFAULT_LAV_ROOT = PACKAGE_DIR / "third_party" / "Light-A-Video"
+
+#: Where IC-Light and YOLO weights are cached. Both download on first use.
+DEFAULT_MODELS_DIR = PACKAGE_DIR / "models"
 
 #: Seconds of video relit under a single sampled prompt.
 DEFAULT_SEGMENT_SEC = 8
 
+_IC_LIGHT_WEIGHTS = "iclight_sd15_fc.safetensors"
+
 
 def resolve_lav_root(explicit: str | None = None) -> Path:
-    """Locate the Light-A-Video checkout: ``--lav_root``, then ``$LAV_ROOT``, then the symlink."""
+    """Locate the Light-A-Video checkout: ``--lav_root``, then ``$LAV_ROOT``, then the submodule."""
     for candidate in (explicit, os.environ.get("LAV_ROOT"), DEFAULT_LAV_ROOT):
         if not candidate:
             continue
         root = Path(candidate).resolve()
-        if (root / "lav_randomize_video.py").is_file():
+        # src/ic_light.py is upstream's, so it marks a real checkout rather than an empty dir.
+        if (root / "src" / "ic_light.py").is_file():
             return root
     raise FileNotFoundError(
-        f"Light-A-Video not found (looked for lav_randomize_video.py under {DEFAULT_LAV_ROOT}). "
-        "Pass --lav_root, set $LAV_ROOT, or recreate the symlink:\n"
-        f"  ln -sfn /path/to/Light-A-Video {DEFAULT_LAV_ROOT}"
+        f"Light-A-Video not found at {DEFAULT_LAV_ROOT}. The submodule is probably "
+        "not initialized — run:\n"
+        "  git submodule update --init --recursive\n"
+        "Or point at an existing checkout with --lav_root / $LAV_ROOT."
     )
 
 
 def _import_lav(lav_root: Path):
-    """Import the Light-A-Video driver module.
+    """Import MIMIC's pipeline module with the Light-A-Video submodule importable.
 
-    The upstream scripts resolve model weights against relative paths such as
-    ``./models/iclight_sd15_fc.safetensors``, so the process cwd is moved into
-    the checkout — the same thing upstream's own batch script does. Callers must
-    absolutize their paths beforehand.
+    Two entries go on ``sys.path``: this package (for ``lav_randomize_video`` and
+    its sibling ``lav_wan_sidewalk``) and the submodule root (for upstream's
+    ``src.*`` and ``utils.*``). The process working directory is left alone —
+    every model path handed to the pipeline is absolute.
     """
-    if str(lav_root) not in sys.path:
-        sys.path.insert(0, str(lav_root))
-    os.chdir(lav_root)
-    import lav_randomize_video  # deferred until sys.path is set up
+    for entry in (str(PACKAGE_DIR), str(lav_root)):
+        if entry not in sys.path:
+            sys.path.insert(0, entry)
+    import lav_randomize_video  # our pipeline; resolved from PACKAGE_DIR
 
     return lav_randomize_video
 
@@ -102,10 +112,14 @@ def build_pipeline_args(
     no_yolo: bool = False,
     upscaler: str = "none",
     compile_vdm: bool = False,
-    lav_root: Path | None = None,
+    models_dir: Path | None = None,
 ) -> SimpleNamespace:
-    """Build the config object consumed by Light-A-Video's ``load_pipeline``."""
-    root = lav_root or DEFAULT_LAV_ROOT
+    """Build the config object consumed by ``lav_randomize_video.load_pipeline``.
+
+    Model paths are absolute so the pipeline does not depend on the process cwd.
+    """
+    models = Path(models_dir or DEFAULT_MODELS_DIR)
+    models.mkdir(parents=True, exist_ok=True)
     return SimpleNamespace(
         seed=seed,
         n_lights=n_lights,
@@ -117,18 +131,18 @@ def build_pipeline_args(
         fg_preserve=0.0 if no_yolo else fg_preserve,
         detail_strength=detail_strength,
         no_yolo=no_yolo,
-        yolo_model="yolov8n.pt",
+        yolo_model=str(models / "yolov8n.pt"),
         upscaler=upscaler,
         negative_prompt=prompt_store.NEGATIVE_PROMPT,
         sd_model="stablediffusionapi/realistic-vision-v51",
         vdm_model="Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
-        ic_light_model=str(Path(root) / "models" / "iclight_sd15_fc.safetensors"),
+        ic_light_model=str(models / _IC_LIGHT_WEIGHTS),
         compile=compile_vdm,
     )
 
 
 def apply_prompt_pool(lav_module, pool: list[str], segment_sec: int = DEFAULT_SEGMENT_SEC) -> None:
-    """Point Light-A-Video at the MIMIC prompt store.
+    """Point the pipeline at the MIMIC prompt store.
 
     ``process_one_video`` reads its prompt pool, light directions and segment
     length from module globals, so they are rebound here rather than passed in.
@@ -159,7 +173,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output", type=str, default=None,
         help="Output video. Default: alongside the input as <stem>_aug.mp4.",
     )
-    io_group.add_argument("--lav_root", type=str, default=None, help="Light-A-Video checkout. Default: the sibling symlink or $LAV_ROOT.")
+    io_group.add_argument(
+        "--lav_root", type=str, default=None,
+        help="Light-A-Video checkout. Default: the third_party submodule, or $LAV_ROOT.",
+    )
+    io_group.add_argument(
+        "--models_dir", type=str, default=None,
+        help=f"Weight cache for IC-Light and YOLO. Default: {DEFAULT_MODELS_DIR}",
+    )
     io_group.add_argument("--overwrite", action="store_true", help="Overwrite an existing output file.")
     io_group.add_argument("--dry_run", action="store_true", help="Print the plan and exit without loading models.")
 
@@ -275,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
         no_yolo=args.no_yolo,
         upscaler=args.upscaler,
         compile_vdm=args.compile_vdm,
-        lav_root=lav_root,
+        models_dir=Path(args.models_dir) if args.models_dir else None,
     )
 
     state = lav.load_pipeline(pipeline_args)

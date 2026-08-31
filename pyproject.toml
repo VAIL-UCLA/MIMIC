@@ -46,3 +46,5 @@ packages = ["mimic"]
 
 [tool.ruff]
 line-length = 100
+# Upstream code, vendored as a submodule and used unmodified.
+extend-exclude = ["mimic/appearance_augmentation/third_party"]
