@@ -13,8 +13,10 @@ may be stored as ``.npy``, ``.npz`` or ``.json``:
     no poses are present, which is approximate — see
     :func:`~mimic.action_augmentation.trajectory.poses_from_waypoints`.
 
-A bare ``.npy`` holding an array is read positionally: ``(N, 3)`` is poses,
-``(N, K, 3)`` is waypoints.
+A bare ``.npy`` holding an array is read positionally: ``(N, C)`` with ``C >= 3``
+is poses, of which only the leading ``(x, y, yaw)`` columns are used — any
+trailing columns are derived quantities and are ignored. ``(N, K, 3)`` is
+waypoints.
 """
 
 from __future__ import annotations
@@ -119,13 +121,16 @@ def load_labels(
             fields = {k: data[k] for k in data.files}
     elif suffix == ".npy":
         array = np.load(path, allow_pickle=False)
-        if array.ndim == 2 and array.shape[1] == 3:
-            fields = {"poses": array}
+        if array.ndim == 2 and array.shape[1] >= 3:
+            # Recorded pose files often carry derived columns after the pose —
+            # e.g. the sample clips store (x, y, yaw, v, w). Take the pose.
+            fields = {"poses": array[:, :3]}
         elif array.ndim == 3 and array.shape[2] == 3:
             fields = {"waypoints": array}
         else:
             raise ValueError(
-                f"{path.name}: expected (N, 3) poses or (N, K, 3) waypoints, got {array.shape}"
+                f"{path.name}: expected (N, >=3) poses or (N, K, 3) waypoints, "
+                f"got {array.shape}"
             )
     else:
         raise ValueError(f"Unsupported sidecar format: {path.suffix}")

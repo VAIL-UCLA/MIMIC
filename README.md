@@ -97,6 +97,12 @@ grow the training set from recorded sidewalk footage.
 | [`mimic/appearance_augmentation`](mimic/appearance_augmentation) | Re-render a clip under new lighting, weather and time-of-day conditions |
 | [`mimic/action_augmentation`](mimic/action_augmentation) | Generate deviate-and-recover maneuvers with matching action labels |
 
+Three short sample clips ship in [`assets/clips`](assets/clips) so the pipeline
+can be exercised without any data of your own. Each carries RGB (rectified
+pinhole and raw fisheye), recorded metric poses, semantic masks and camera
+intrinsics. People in them are blurred — see
+[`assets/clips/README.md`](assets/clips/README.md).
+
 ### Appearance augmentation
 
 Re-renders a clip under new lighting, weather and time-of-day conditions.

@@ -1,0 +1,358 @@
+{
+  "created": "2026-07-01T12:42:03Z",
+  "dataset": "coco_250",
+  "scenario": "298696ea",
+  "num_frames": 372,
+  "resolution_hw": [
+    270,
+    480
+  ],
+  "fps": 20.0,
+  "dt_s": 0.05,
+  "files": {
+    "rgb_fisheye": "rgb_fisheye.mp4",
+    "rgb_pinhole": "rgb_pinhole.mp4",
+    "poses_recorded": "poses_recorded.npy",
+    "route": "route.mp4",
+    "semantics": "semantics.zpack"
+  },
+  "modalities": {
+    "rgb_fisheye": {
+      "available": true,
+      "file": "rgb_fisheye.mp4",
+      "resolution_hw": [
+        270,
+        480
+      ],
+      "fps": 20.0,
+      "note": "raw fisheye stream copied verbatim from front_fisheye_270x480.mp4",
+      "camera": {
+        "model": "opencv_fisheye_kannala_brandt",
+        "verified": true,
+        "confidence": "source_calib",
+        "K": [
+          [
+            200.75,
+            0,
+            240.0
+          ],
+          [
+            0,
+            200.75,
+            135.0
+          ],
+          [
+            0,
+            0,
+            1
+          ]
+        ],
+        "fx": 200.75,
+        "fy": 200.75,
+        "cx": 240.0,
+        "cy": 135.0,
+        "distortion_model": "fisheye_kb",
+        "distortion_k1k2k3k4": [
+          -0.027864114,
+          0.002959364,
+          0.0,
+          0.0
+        ],
+        "distortion_note": "Kannala-Brandt coeffs are angle-based -> resolution-independent; NOT scaled from native 1920x1080 (identical to fisheye_source coeffs)",
+        "native_resolution_wh": [
+          1920,
+          1080
+        ],
+        "native_fx": 803.0,
+        "native_cx": 960.0,
+        "native_cy": 540.0,
+        "camera_height_m": 0.456,
+        "note": "raw fisheye; fx/fy scaled from native by width ratio (x0.25), principal point centered"
+      }
+    },
+    "rgb_pinhole": {
+      "available": true,
+      "file": "rgb_pinhole.mp4",
+      "resolution_hw": [
+        270,
+        480
+      ],
+      "fps": 20.0,
+      "note": "rectified pinhole stream copied verbatim from front_pinhole_270x480.mp4",
+      "camera": {
+        "model": "pinhole",
+        "verified": true,
+        "confidence": "source_calib",
+        "K": [
+          [
+            166.6563459967272,
+            0,
+            240.0
+          ],
+          [
+            0,
+            166.6563459967272,
+            135.0
+          ],
+          [
+            0,
+            0,
+            1
+          ]
+        ],
+        "fx": 166.6563459967272,
+        "fy": 166.6563459967272,
+        "cx": 240.0,
+        "cy": 135.0,
+        "distortion_model": "none",
+        "distortion": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "hfov_deg": 110.44766183865366,
+        "vfov_deg": 78.01841587930589,
+        "camera_height_m": 0.456,
+        "note": "rectified pinhole (undistorted from the fisheye); recommended stream for DA3 depth"
+      }
+    },
+    "depth": {
+      "available": false,
+      "planned": true,
+      "note": "derive on the rgb_pinhole stream via DA3 once run"
+    },
+    "semantic": {
+      "available": true,
+      "file": "semantics.zpack",
+      "source_rgb": "rgb_pinhole.mp4",
+      "dtype": "uint8",
+      "resolution_hw": [
+        270,
+        480
+      ],
+      "num_frames": 372,
+      "classes_present": [
+        1,
+        2,
+        4,
+        5,
+        6,
+        7,
+        9,
+        10,
+        11,
+        12,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "class_names": {
+        "1": "EGO_OCCLUSION",
+        "2": "ACTOR_PERSON",
+        "4": "ACTOR_VEHICLE",
+        "5": "ACTOR_ANIMAL",
+        "6": "GROUND_CURB",
+        "7": "GROUND_CROSSWALK",
+        "9": "GROUND_NATURAL",
+        "10": "GROUND_SIDEWALK",
+        "11": "GROUND_ROAD",
+        "12": "GROUND_ROAD_GUTTER",
+        "14": "OBJECT_TRAFFIC_LIGHT",
+        "15": "OBJECT_OBSTACLE",
+        "16": "OBJECT_FOD",
+        "17": "VEGETATION_OBSTACLE",
+        "18": "VEGETATION_FOD",
+        "19": "STATIC_STRUCTURE",
+        "20": "SKY"
+      },
+      "taxonomy": "Imitator segmentation-dataset-v0 (ids 0-13) + extended (14-20)",
+      "all_class_names": [
+        "BACKGROUND",
+        "EGO_OCCLUSION",
+        "ACTOR_PERSON",
+        "ACTOR_RIDER",
+        "ACTOR_VEHICLE",
+        "ACTOR_ANIMAL",
+        "GROUND_CURB",
+        "GROUND_CROSSWALK",
+        "GROUND_DRIVEWAY",
+        "GROUND_NATURAL",
+        "GROUND_SIDEWALK",
+        "GROUND_ROAD",
+        "GROUND_ROAD_GUTTER",
+        "GROUND_OTHER",
+        "OBJECT_TRAFFIC_LIGHT",
+        "OBJECT_OBSTACLE",
+        "OBJECT_FOD",
+        "VEGETATION_OBSTACLE",
+        "VEGETATION_FOD",
+        "STATIC_STRUCTURE",
+        "SKY"
+      ],
+      "model": "coco-robotics/segformer-b5-v1-all-classes",
+      "decode": "uint8 class-id per pixel",
+      "zpack_format": "single zstd frame wrapping a stored npz of {data, classes, decode}"
+    },
+    "normal": {
+      "available": false,
+      "planned": true,
+      "note": "derive from depth+pinhole camera once depth exists"
+    },
+    "flow": {
+      "available": false,
+      "planned": true
+    },
+    "route": {
+      "available": true,
+      "file": "route.mp4",
+      "num_frames": 372,
+      "resolution_hw": [
+        128,
+        128
+      ],
+      "file_size_bytes": 121476,
+      "note": "BEV route minimap copied verbatim from 20HZ_270H_480W/<scn>/front_route.mp4"
+    }
+  },
+  "poses": {
+    "npy_shape": [
+      372,
+      5
+    ],
+    "dtype": "float32",
+    "columns": [
+      "x_m",
+      "y_m",
+      "yaw_rad",
+      "velocity_mps",
+      "angular_velocity_radps"
+    ],
+    "files": {
+      "poses_recorded.npy": "recorded ego poses from frame_data.npy (x,y,yaw); v,w recomputed via unicycle finite-diff for cross-dataset consistency"
+    },
+    "frame": "world_z_up_planar",
+    "dt_s": 0.05,
+    "source_frame_data_cols": "frame_data.npy is (N,5) [x,y,yaw,v,w]; x,y,yaw used as recorded, v,w recomputed",
+    "inferred": "none (recorded poses; no DA3 camera-pose inference)"
+  },
+  "robot": {
+    "name": "Coco Robotics sidewalk delivery robot",
+    "vendor": "Coco Robotics",
+    "dims_lwh_mm": null,
+    "camera_height_m": 0.456,
+    "note": "camera_height_m from per-scenario camera_params.json"
+  },
+  "camera_params_source": {
+    "model": "opencv_fisheye (Kannala-Brandt)",
+    "fps": 20.0,
+    "balance": 0.0,
+    "camera_height_m": 0.456,
+    "fisheye_source": {
+      "image_size_wh": [
+        1920,
+        1080
+      ],
+      "fx": 803.0,
+      "fy": 803.0,
+      "cx": 960.0,
+      "cy": 540.0,
+      "distortion_k1k2k3k4": [
+        -0.027864114,
+        0.002959364,
+        0.0,
+        0.0
+      ]
+    },
+    "pinhole_output": {
+      "image_size_wh": [
+        480,
+        270
+      ],
+      "fx": 166.6563459967272,
+      "fy": 166.6563459967272,
+      "cx": 240.0,
+      "cy": 135.0,
+      "hfov_deg": 110.44766183865366,
+      "vfov_deg": 78.01841587930589
+    },
+    "fisheye_output": {
+      "image_size_wh": [
+        480,
+        270
+      ],
+      "fx": 200.75,
+      "fy": 200.75,
+      "cx": 240.0,
+      "cy": 135.0,
+      "distortion_k1k2k3k4": [
+        -0.027864114,
+        0.002959364,
+        0.0,
+        0.0
+      ]
+    }
+  },
+  "anonymization": {
+    "method": "person-head blur (mosaic + gaussian)",
+    "detectors": {
+      "yolo": {
+        "weights": "yolov8x.pt",
+        "conf": 0.1,
+        "imgsz": 960
+      },
+      "semantic": {
+        "class": "ACTOR_PERSON",
+        "streams": [
+          "rgb_pinhole.mp4"
+        ]
+      },
+      "centerface": {
+        "threshold": 0.2,
+        "in_shape": "2x native"
+      }
+    },
+    "head_fraction": 0.4,
+    "whole_body_below_px": 24,
+    "temporal_pad_frames": 3,
+    "streams": [
+      {
+        "stream": "rgb_pinhole.mp4",
+        "frames": 372,
+        "frames_blurred": 186,
+        "regions": {
+          "yolo": 44,
+          "semantic": 56,
+          "face": 8
+        },
+        "semantic_check": {
+          "person_frames": 33,
+          "person_pixels": 1492,
+          "head_pixels": 562,
+          "head_pixels_blurred": 562,
+          "head_recall": 1.0
+        }
+      },
+      {
+        "stream": "rgb_fisheye.mp4",
+        "frames": 372,
+        "frames_blurred": 190,
+        "regions": {
+          "yolo": 118,
+          "semantic": 0,
+          "face": 8
+        }
+      }
+    ],
+    "untouched": [
+      "route.mp4"
+    ],
+    "note": "route.mp4 is a synthetic map render and contains no camera imagery."
+  },
+  "clip_uid": "298696ea"
+}

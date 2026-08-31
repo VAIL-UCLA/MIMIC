@@ -10,3 +10,6 @@ dist/
 # Downloaded model weights (IC-Light, YOLO) — fetched on first run.
 mimic/appearance_augmentation/models/
 mimic/action_augmentation/models/
+
+# Private map from published clip UIDs back to their source scenario ids.
+.uid_map.json
