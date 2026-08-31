@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Vendored reference checkout — machine-specific absolute symlink.
+# Recreate with: ln -sfn /path/to/Light-A-Video mimic/appearance_augmentation/Light-A-Video
+mimic/appearance_augmentation/Light-A-Video
