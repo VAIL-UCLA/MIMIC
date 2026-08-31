@@ -33,6 +33,7 @@ Optional extras:
 | Extra | Install | For |
 |---|---|---|
 | `appearance` | `uv sync --extra appearance` | Appearance augmentation (torch, diffusers, ultralytics — needs a CUDA GPU) |
+| `action` | `uv sync --extra action` | Action augmentation video synthesis (needs a CUDA GPU; the label path needs neither) |
 | `dev` | `uv sync --extra dev` | ruff, pytest |
 
 If you only want to run inference with the released ONNX policy, you can skip
@@ -94,7 +95,7 @@ grow the training set from recorded sidewalk footage.
 | Module | Purpose |
 |---|---|
 | [`mimic/appearance_augmentation`](mimic/appearance_augmentation) | Re-render a clip under new lighting, weather and time-of-day conditions |
-| `mimic/action_augmentation` | Corrective / perturbed trajectory generation |
+| [`mimic/action_augmentation`](mimic/action_augmentation) | Generate deviate-and-recover maneuvers with matching action labels |
 
 ### Appearance augmentation
 
@@ -144,6 +145,63 @@ See [`mimic/appearance_augmentation/README.md`](mimic/appearance_augmentation/RE
 for the full upstream-vs-ours comparison, prompt categories, quality knobs and
 the batching API.
 
+### Action augmentation
+
+Recorded data only shows the robot driving well, so a policy trained on it has
+never seen itself off-course. This module manufactures that experience: the
+robot drifts laterally off the recorded path and corrects back onto it, and both
+the re-rendered video and the matching action label are generated.
+
+```
+offset
+  ^
+s |         ___
+  |       /     \
+  |     /         \
+0 +----/-----------\------------->  t
+  0        2 s      4 s
+  deviate  peak     rejoined
+```
+
+Only the lateral offset is specified — heading is derived from the path tangent,
+so the maneuver stays kinematically consistent. Peak yaw follows in closed form
+as `atan(s·π / (H·v))`.
+
+View synthesis is
+[TrajectoryCrafter](https://github.com/TrajectoryCrafter/TrajectoryCrafter)
+(ICCV 2025), again a **submodule used unmodified**:
+
+```
+mimic/action_augmentation/third_party/TrajectoryCrafter   ← upstream, pinned
+```
+
+Upstream has no way to express a ground-plane maneuver — its pose generators are
+orbit parameterizations for cinematic camera moves — and no notion of action
+labels at all. Our layer adds the metric SE(2) maneuver, the derived heading, and
+the label generation.
+
+```bash
+uv sync --extra action
+
+# 0.5 m drift left, rejoining over a 4 s horizon
+uv run python -m mimic.action_augmentation.augment_action \
+    --input clip.mp4 --strength 0.5
+
+# sample the offset per clip, coin-flip the side
+uv run python -m mimic.action_augmentation.augment_action \
+    --input clip.mp4 --strength_range 0.3 0.8 --seed 42
+
+# trajectory and label only, no video synthesis (no GPU needed)
+uv run python -m mimic.action_augmentation.augment_action \
+    --input clip.mp4 --strength 0.5 --labels_only
+```
+
+Each clip reads an action-label sidecar (`.npy` / `.npz` / `.json`) beside the
+video and writes an augmented one alongside the generated clip. The trajectory
+math is pure numpy and covered by `tests/`; see
+[`mimic/action_augmentation/README.md`](mimic/action_augmentation/README.md) for
+the label schema, the two modes and the `--scale` calibration.
+
 ## Citation
 
 If you find MIMIC helpful for your research, please cite:
@@ -167,6 +225,23 @@ Light Fusion are all theirs. The sidewalk-specific pipeline around it (prompt
 pool, YOLO foreground preservation, resolution/fps preservation, long-video
 scheduling, batch drivers) is ours. We thank the authors for releasing their
 code under the Apache 2.0 license.
+
+Action augmentation builds on **[TrajectoryCrafter](https://github.com/TrajectoryCrafter/TrajectoryCrafter)**
+(Yu, Hu, Xing & Shan, ICCV 2025), which redirects camera trajectory in
+monocular video. It too is a submodule used **unmodified** — DepthCrafter depth
+estimation, the point-cloud forward warp and the CogVideoX-Fun refinement are all
+theirs. The ground-plane maneuver model, the derived-heading trajectory math and
+the action-label generation are ours.
+
+```bibtex
+@InProceedings{Yu_2025_ICCV,
+  title={TrajectoryCrafter: Redirecting Camera Trajectory for Monocular Videos via Diffusion Models},
+  author={Yu, Mark and Hu, Wenbo and Xing, Jinbo and Shan, Ying},
+  booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)},
+  year={2025},
+  pages={100--111}
+}
+```
 
 ```bibtex
 @InProceedings{Zhou_2025_ICCV,

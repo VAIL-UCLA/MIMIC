@@ -16,6 +16,26 @@ dev = [
     "ruff",
     "pytest",
 ]
+# Runtime for mimic.action_augmentation (TrajectoryCrafter). Needs a CUDA GPU.
+# The label path (--labels_only) needs none of this, only numpy.
+action = [
+    "torch",
+    "torchvision",
+    "diffusers>=0.30.1",
+    "transformers",
+    "accelerate",
+    "safetensors",
+    "einops",
+    "opencv-python",
+    "imageio[ffmpeg]",
+    "pillow",
+    "omegaconf",
+    "scikit-image",
+    "decord",
+    "kornia",
+    "sentencepiece",
+    "ftfy",
+]
 # Runtime for mimic.appearance_augmentation (Light-A-Video). Needs a CUDA GPU.
 # Versions follow Light-A-Video's requirements.txt; diffusers must be new enough
 # for the Wan2.1 backbone (AutoencoderKLWan).
@@ -44,7 +64,13 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["mimic"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.ruff]
 line-length = 100
 # Upstream code, vendored as a submodule and used unmodified.
-extend-exclude = ["mimic/appearance_augmentation/third_party"]
+extend-exclude = [
+    "mimic/appearance_augmentation/third_party",
+    "mimic/action_augmentation/third_party",
+]

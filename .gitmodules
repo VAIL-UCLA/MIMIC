@@ -2,3 +2,6 @@
 	path = mimic/appearance_augmentation/third_party/Light-A-Video
 	url = https://github.com/bcmi/Light-A-Video.git
 	branch = main
+[submodule "mimic/action_augmentation/third_party/TrajectoryCrafter"]
+	path = mimic/action_augmentation/third_party/TrajectoryCrafter
+	url = https://github.com/TrajectoryCrafter/TrajectoryCrafter.git
