@@ -47,6 +47,11 @@ non-fatal: it falls back to an OpenCV Haar cascade, then to full-frame relightin
 `--no_yolo` skips detection entirely — noticeably faster, and fine for clips
 with no people.
 
+Run it over a whole corpus with
+[`scripts/stage_1_appearance_augmentation.py`](../../scripts/stage_1_appearance_augmentation.py),
+which loads the pipeline once, shows progress, resumes on re-run and writes a
+manifest of what was produced.
+
 ## Layout
 
 | Path | Origin | Purpose |

@@ -27,17 +27,32 @@ uv run python -m mimic.action_augmentation.calibrate_scale \
 
 ## Anonymization
 
-People in the two RGB streams have had their head regions blurred by
-[`scripts/anonymize_clips.py`](../../scripts/anonymize_clips.py). Each clip's
-`meta.json` carries an `anonymization` block recording the detector settings and
-the measured coverage.
+People in the two RGB streams have had their head regions blurred. Each clip's
+`meta.json` carries an `anonymization` block recording the exact detector
+settings and the measured coverage.
 
-Note that a plain face detector is not sufficient at this resolution — at
-480 × 270 and at night, faces are only a handful of pixels and CenterFace (the
-detector behind `deface`) fires on almost none of them. People are therefore
-located as *people*, by a YOLOv8 person detector and by the `ACTOR_PERSON`
-channel of the shipped semantic masks, and the head end of each detection is
-blurred. Face detection runs on top of that as a supplement. See the script's
-module docstring for the measurements behind that choice.
+A plain face detector is not sufficient at this resolution — at 480 × 270 and at
+night, faces are only a handful of pixels, and CenterFace (the detector behind
+`deface`) covered 1 of 276 person-frames at its default threshold on the clip
+with the most pedestrian content. People were therefore located as *people*, by
+a YOLOv8 person detector and by the `ACTOR_PERSON` channel of the shipped
+semantic masks, and the head end of each detection blurred, with face detection
+on top as a supplement. Measured against those semantic masks, head-pixel recall
+was 100% on all three pinhole streams.
 
-`route.mp4` is a vector map render with no camera imagery and is left as-is.
+`route.mp4` is a vector map render with no camera imagery and was left as-is.
+
+## Known quirks
+
+These are recorded clips, not clean test fixtures, and the tooling is built to
+cope with what is actually in them:
+
+- **The robot parks.** It idles at crossings for seconds at a time — 40% of
+  `09294dbb` and 37% of `38aee4d8` are stationary, including the first 3.9 s of
+  `09294dbb`. A maneuver placed there would label a parked robot sliding
+  sideways, so stage 2 picks a moving window instead.
+- **The robot reverses**, at up to 2.2 m/s. A path tangent points backwards
+  then, so headings are taken from the recorded yaw rather than the tangent.
+- **A few headings are corrupt.** `298696ea` and `38aee4d8` each carry two
+  samples whose recorded yaw is 180° from their direction of travel, at a wrap
+  boundary. Stage 2 detects these and routes the maneuver around them.

@@ -322,3 +322,123 @@ def test_peak_yaw_matches_lateral_velocity():
     # d(t) = s/2 (1 - cos 2*pi*t/H)  ->  max |d'| = s*pi/H
     expected = np.arctan2(0.5 * np.pi / 4.0, speed)
     assert np.abs(new[:, 2]).max() == pytest.approx(expected, rel=1e-3)
+
+
+# =====================================================================
+# Recorded footage is not a clean straight run: robots park at crossings,
+# reverse, and occasionally record a corrupt heading. Each of these broke
+# the maneuver in a different way.
+# =====================================================================
+
+
+def _straight_path(n=100, fps=20.0, speed=1.5):
+    t = np.arange(n) / fps
+    x = speed * t
+    return np.stack([x, np.zeros(n), np.zeros(n)], axis=1), t
+
+
+def test_parked_robot_gets_no_manufactured_heading():
+    """Displacing a stationary robot sideways gives a tangent perpendicular to
+    the way it faces. The heading must stay put instead."""
+    n, fps = 100, 20.0
+    t = np.arange(n) / fps
+    poses = np.zeros((n, 3))
+    poses[:, 2] = 0.3            # parked, facing a fixed direction
+    offsets = tj.lateral_offset_profile(t, 0.5, 4.0, "raised_cosine")
+    out = tj.apply_lateral_offset(poses, offsets)
+    assert np.allclose(out[:, 2], 0.3, atol=1e-9)
+
+
+def test_parked_robot_still_gets_displaced():
+    """Only the heading is held; the offset itself still applies."""
+    n = 100
+    poses = np.zeros((n, 3))
+    offsets = np.full(n, 0.4)
+    out = tj.apply_lateral_offset(poses, offsets)
+    np.testing.assert_allclose(out[:, 1], 0.4)
+
+
+def test_reversing_robot_keeps_its_heading():
+    """A robot backing up has a path tangent 180 degrees from where it faces.
+    Taking the tangent as the heading flips the whole maneuver."""
+    n, fps = 100, 20.0
+    t = np.arange(n) / fps
+    poses = np.stack([-1.5 * t, np.zeros(n), np.zeros(n)], axis=1)  # facing +x, moving -x
+    offsets = tj.lateral_offset_profile(t, 0.5, 4.0, "raised_cosine")
+    out = tj.apply_lateral_offset(poses, offsets)
+    delta = np.degrees(np.abs(tj.wrap_angle(out[:, 2] - poses[:, 2])))
+    assert delta.max() < 30.0, f"reversing produced {delta.max():.1f} deg of spurious yaw"
+
+
+def test_forward_and_reverse_yaw_deltas_agree():
+    """The maneuver's turn should not depend on the sign of travel."""
+    n, fps = 100, 20.0
+    t = np.arange(n) / fps
+    offsets = tj.lateral_offset_profile(t, 0.5, 4.0, "raised_cosine")
+
+    fwd = np.stack([1.5 * t, np.zeros(n), np.zeros(n)], axis=1)
+    rev = np.stack([-1.5 * t, np.zeros(n), np.zeros(n)], axis=1)
+    d_fwd = tj.wrap_angle(tj.apply_lateral_offset(fwd, offsets)[:, 2] - fwd[:, 2])
+    d_rev = tj.wrap_angle(tj.apply_lateral_offset(rev, offsets)[:, 2] - rev[:, 2])
+    np.testing.assert_allclose(d_fwd, -d_rev, atol=1e-6)
+
+
+def test_path_speed_matches_a_constant_rate():
+    poses, t = _straight_path(speed=1.5)
+    speed = tj.path_speed(poses, t)
+    np.testing.assert_allclose(speed, 1.5, rtol=1e-9)
+
+
+def test_yaw_consistency_catches_a_flipped_sample():
+    """The failure seen in the sample data: one heading 180 degrees out at a
+    wrap boundary, everything else clean."""
+    poses, t = _straight_path()
+    poses[40, 2] = np.pi
+    ok = tj.yaw_is_consistent(poses, t)
+    assert not ok[40]
+    assert ok.sum() == len(poses) - 1
+
+
+def test_yaw_consistency_ignores_stationary_samples():
+    """A parked robot has no direction of travel to disagree with."""
+    n = 60
+    t = np.arange(n) / 20.0
+    poses = np.zeros((n, 3))
+    poses[:, 2] = 2.0
+    assert tj.yaw_is_consistent(poses, t).all()
+
+
+def test_maneuver_start_skips_a_parked_opening():
+    """Half parked, then moving: the maneuver belongs in the moving half."""
+    fps, n = 20.0, 200
+    t = np.arange(n) / fps
+    x = np.where(t < 5.0, 0.0, 1.5 * (t - 5.0))
+    poses = np.stack([x, np.zeros(n), np.zeros(n)], axis=1)
+    start, fraction = tj.best_maneuver_start(poses, t, 4.0)
+    assert start >= 5.0
+    assert fraction == pytest.approx(1.0)
+
+
+def test_maneuver_start_avoids_a_corrupt_heading():
+    poses, t = _straight_path(n=400)
+    poses[100, 2] = np.pi
+    start, fraction = tj.best_maneuver_start(poses, t, 4.0)
+    window = (t >= start) & (t <= start + 4.0)
+    assert not window[100], "the maneuver window still contains the bad sample"
+    assert fraction == pytest.approx(1.0)
+
+
+def test_maneuver_start_reports_a_hopeless_clip():
+    """Parked throughout: there is nowhere good, and the caller must be told."""
+    n = 200
+    t = np.arange(n) / 20.0
+    poses = np.zeros((n, 3))
+    start, fraction = tj.best_maneuver_start(poses, t, 4.0)
+    assert fraction == pytest.approx(0.0)
+    assert start == pytest.approx(0.0)
+
+
+def test_maneuver_start_stays_within_the_clip():
+    poses, t = _straight_path(n=200)
+    start, _ = tj.best_maneuver_start(poses, t, 4.0)
+    assert start + 4.0 <= t[-1] + 1e-9

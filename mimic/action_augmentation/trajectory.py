@@ -152,12 +152,22 @@ def relative_pose(reference: np.ndarray, target: np.ndarray) -> np.ndarray:
 # =====================================================================
 
 
-def path_tangent_yaw(positions: np.ndarray, fallback: np.ndarray | None = None) -> np.ndarray:
+def path_tangent_yaw(
+    positions: np.ndarray,
+    fallback: np.ndarray | None = None,
+    trust: np.ndarray | None = None,
+) -> np.ndarray:
     """Heading at each sample from the path tangent, via central differences.
 
     Samples where the robot is essentially stationary have no meaningful tangent;
     those fall back to ``fallback`` (the recorded heading) when given, and
     otherwise hold the previous valid heading.
+
+    ``trust`` marks samples whose tangent the caller knows to be unreliable even
+    though the step is nonzero. Displacing a *parked* robot sideways produces a
+    perfectly good tangent that points 90 degrees away from where the robot is
+    actually facing, so the caller has to say which samples had real motion of
+    their own — see :func:`apply_lateral_offset`.
     """
     positions = np.asarray(positions, dtype=np.float64)
     n = len(positions)
@@ -182,6 +192,8 @@ def path_tangent_yaw(positions: np.ndarray, fallback: np.ndarray | None = None) 
 
     # Degenerate tangents: too small a step to trust the direction.
     bad = step < 1e-9
+    if trust is not None:
+        bad = bad | ~np.asarray(trust, dtype=bool)
     if bad.any():
         if fallback is not None:
             yaw[bad] = np.asarray(fallback, dtype=np.float64)[bad]
@@ -197,10 +209,26 @@ def path_normals(poses: np.ndarray) -> np.ndarray:
     return np.stack([-np.sin(yaw), np.cos(yaw)], axis=-1)
 
 
+#: How far the recorded path must move, relative to the offset it is being
+#: displaced by, before its tangent is taken as the new heading. Below this the
+#: recorded heading is held instead. The ratio bounds the heading a maneuver can
+#: manufacture out of near-stationary footage at ``atan(1 / ratio)`` — 26.6
+#: degrees at 2.0, comfortably above the ~15 degrees a real maneuver produces at
+#: walking pace.
+TANGENT_DOMINANCE = 2.0
+
+#: Absolute floor, in meters, on the recorded central-difference step. Below
+#: this the robot is parked and there is no heading to recover from its path at
+#: all — not even where the offset profile is momentarily flat, which is exactly
+#: where the dominance ratio alone degenerates into 0 >= 0.
+MIN_TRAVEL_M = 1e-3
+
+
 def apply_lateral_offset(
     poses: np.ndarray,
     offsets: np.ndarray,
     recompute_yaw: bool = True,
+    dominance: float = TANGENT_DOMINANCE,
 ) -> np.ndarray:
     """Displace a path sideways by a per-sample offset.
 
@@ -213,6 +241,11 @@ def apply_lateral_offset(
         recompute_yaw: Take heading from the tangent of the displaced path. This
             is what keeps the maneuver kinematically consistent; disable it only
             to inspect a pure sideways translation.
+        dominance: How much the recorded motion must exceed the offset's own
+            motion before the displaced tangent is trusted — see
+            :data:`TANGENT_DOMINANCE`. Recorded clips routinely sit at a
+            crossing for seconds at a time, and a parked robot pushed sideways
+            has a tangent perpendicular to the way it is facing.
 
     Returns:
         ``(N, 3)`` displaced poses.
@@ -227,8 +260,156 @@ def apply_lateral_offset(
     out = poses.copy()
     out[:, :2] = poses[:, :2] + offsets[:, None] * path_normals(poses)
     if recompute_yaw:
-        out[:, 2] = path_tangent_yaw(out[:, :2], fallback=poses[:, 2])
+        out[:, 2] = _yaw_with_offset(poses, out[:, :2], offsets, dominance)
     return out
+
+
+def _yaw_with_offset(
+    poses: np.ndarray, displaced: np.ndarray, offsets: np.ndarray, dominance: float
+) -> np.ndarray:
+    """Recorded heading plus the turn the lateral offset actually induces.
+
+    Taking the displaced path's tangent as the heading outright is wrong on
+    recorded footage in two ways. A robot backing up has a path tangent 180
+    degrees from the way it faces, and a parked robot displaced sideways gets a
+    tangent perpendicular to it — the sample clips do both, sitting at crossings
+    and reversing at up to 2.2 m/s. Both artifacts are properties of the
+    *recorded* path, so both cancel in the difference between the displaced and
+    recorded tangents, which is the only part the maneuver contributes.
+
+    Where even that difference is meaningless — the robot barely moved, so the
+    offset's own sideways rate is all there is — the delta is dropped and the
+    recorded heading stands.
+    """
+    tangent_recorded = path_tangent_yaw(poses[:, :2])
+    tangent_displaced = path_tangent_yaw(displaced)
+    delta = wrap_angle(tangent_displaced - tangent_recorded)
+    delta[~_tangent_is_trustworthy(poses[:, :2], offsets, dominance)] = 0.0
+    return wrap_angle(poses[:, 2] + delta)
+
+
+def _central_step(values: np.ndarray) -> np.ndarray:
+    """Magnitude of the central difference used by :func:`path_tangent_yaw`."""
+    values = np.asarray(values, dtype=np.float64)
+    n = len(values)
+    if n < 2:
+        return np.zeros(n)
+    d = np.empty_like(values)
+    d[1:-1] = values[2:] - values[:-2]
+    if n >= 3:
+        d[0] = -3.0 * values[0] + 4.0 * values[1] - values[2]
+        d[-1] = 3.0 * values[-1] - 4.0 * values[-2] + values[-3]
+    else:
+        d[0] = values[1] - values[0]
+        d[-1] = values[-1] - values[-2]
+    return np.abs(d) if d.ndim == 1 else np.hypot(d[:, 0], d[:, 1])
+
+
+def _tangent_is_trustworthy(
+    positions: np.ndarray, offsets: np.ndarray, dominance: float
+) -> np.ndarray:
+    """Where the recorded motion outweighs the sideways displacement.
+
+    The displaced path's tangent is a mix of the robot's real travel and the
+    offset profile's sideways rate. Where the robot barely moved, the second
+    term is all that is left and the tangent stops describing a heading.
+    """
+    travelled = _central_step(np.asarray(positions, dtype=np.float64))
+    sideways = _central_step(np.asarray(offsets, dtype=np.float64))
+    return (travelled > MIN_TRAVEL_M) & (travelled >= dominance * sideways)
+
+
+#: Below this the robot counts as stopped when looking for somewhere to put a
+#: maneuver. Delivery robots idle at crossings for seconds at a time.
+DEFAULT_MIN_SPEED_MPS = 0.2
+
+
+def path_speed(poses: np.ndarray, times: np.ndarray) -> np.ndarray:
+    """Speed at each sample, in meters per second, from the path itself."""
+    poses = np.asarray(poses, dtype=np.float64)
+    times = np.asarray(times, dtype=np.float64)
+    if len(poses) < 2:
+        return np.zeros(len(poses))
+    dp = np.gradient(poses[:, :2], axis=0)
+    dt = np.gradient(times)
+    dt = np.where(np.abs(dt) < 1e-12, 1e-12, dt)
+    return np.hypot(dp[:, 0], dp[:, 1]) / dt
+
+
+#: How far a recorded heading may sit from its own path tangent before the
+#: sample is treated as corrupt. Recorded yaw is usually derived from the path,
+#: so a large disagreement means a bad sample rather than a sharp turn — a 180
+#: degree flip at a wrap boundary is the common one.
+YAW_CONSISTENCY_TOL_RAD = np.pi / 6.0
+
+
+def yaw_is_consistent(
+    poses: np.ndarray,
+    times: np.ndarray,
+    min_speed: float = DEFAULT_MIN_SPEED_MPS,
+    tol: float = YAW_CONSISTENCY_TOL_RAD,
+) -> np.ndarray:
+    """Samples whose recorded heading agrees with the direction of travel.
+
+    A single bad heading is quiet in the recorded data — nothing moves, the
+    pose is where it should be — but a maneuver displaces along the heading's
+    normal, so one flipped sample throws the path a full ``2 * offset`` sideways
+    and manufactures an enormous turn out of nothing.
+
+    Samples slower than ``min_speed`` have no direction of travel to compare
+    against and are reported as consistent; use :func:`path_speed` to exclude
+    them separately.
+    """
+    poses = np.asarray(poses, dtype=np.float64)
+    times = np.asarray(times, dtype=np.float64)
+    if len(poses) < 3:
+        return np.ones(len(poses), dtype=bool)
+    moving = path_speed(poses, times) > min_speed
+    delta = wrap_angle(path_tangent_yaw(poses[:, :2]) - poses[:, 2])
+    return ~(moving & (np.abs(delta) > tol))
+
+
+def best_maneuver_start(
+    poses: np.ndarray,
+    times: np.ndarray,
+    duration: float,
+    min_speed: float = DEFAULT_MIN_SPEED_MPS,
+) -> tuple[float, float]:
+    """Earliest start time whose ``duration`` window is the cleanest to use.
+
+    A maneuver is a deviation from where the robot was *going*. Run one over a
+    stretch where it was parked at a crossing and the label says to slide
+    sideways and back while the video does not move — a sample that teaches the
+    policy nothing true. Run one across a corrupt heading and the label contains
+    a turn that never happened. This finds somewhere better to put it.
+
+    Returns ``(start_time, usable_fraction)``, the fraction being samples in the
+    chosen window that are both moving and self-consistent, so a caller can
+    refuse or warn when even the best window is poor.
+    """
+    times = np.asarray(times, dtype=np.float64)
+    if len(times) == 0:
+        return 0.0, 0.0
+    moving = (path_speed(poses, times) > min_speed) & yaw_is_consistent(
+        poses, times, min_speed
+    )
+
+    best_start, best_fraction = float(times[0]), -1.0
+    for i, start in enumerate(times):
+        window = (times >= start) & (times <= start + duration)
+        if not window.any():
+            continue
+        # Stop once the window runs off the end of the clip, or the tail would
+        # win on a short sample rather than on actually moving.
+        if times[-1] - start < duration and best_fraction >= 0.0:
+            break
+        fraction = float(moving[window].mean())
+        if fraction > best_fraction:
+            best_start, best_fraction = float(start), fraction
+        if best_fraction >= 1.0:
+            break
+        del i
+    return best_start, max(best_fraction, 0.0)
 
 
 def deviate_and_recover(

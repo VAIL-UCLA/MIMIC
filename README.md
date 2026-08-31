@@ -103,6 +103,44 @@ pinhole and raw fisheye), recorded metric poses, semantic masks and camera
 intrinsics. People in them are blurred — see
 [`assets/clips/README.md`](assets/clips/README.md).
 
+### Running both stages over a corpus
+
+Two drivers in [`scripts/`](scripts) run each stage across a directory of clips,
+with a progress bar, per-clip status, resume-on-rerun and a JSON manifest of
+what was produced:
+
+```bash
+# stage 1 — two differently lit copies of every clip
+uv run python scripts/stage_1_appearance_augmentation.py \
+    --input assets/clips --output out/appearance --variants 2
+
+# stage 2 — a deviate-and-recover maneuver per clip
+uv run python scripts/stage_2_action_augmentation.py \
+    --input assets/clips --output out/action --fps 20
+```
+
+Both take `--dry_run`, which prints exactly what would be generated — the
+prompts each clip would draw, or the offset and window each maneuver would use —
+without loading a model or needing a GPU. Stage 2 also takes `--labels_only`,
+which produces the trajectories and labels with no GPU at all.
+
+```
+Stage 2 · Action augmentation
+  clips     : 3 from assets/clips
+  variants  : 2 per clip  (6 maneuvers)
+  maneuver  : deviate_recover, 4s horizon, raised_cosine profile
+  placement : auto, t=4.0 .. 8.9s (first window with the robot moving)
+  offsets   : -0.75 .. +0.61 m  (3 left, 3 right)
+
+  Generating 38aee4d8 · +0.61 m left, 4s from t=8.9s |█████████▌   | 5/6 [00:12<00:02]
+  ✓ 09294dbb_act0.npz  +0.55 m left, 4s from t=7.6s  [2.1s]
+```
+
+Stage 1 loads the relighting model once and reuses it across the corpus. Stage 2
+calibrates any clip that lacks a depth scale before rendering it, and places each
+maneuver on a stretch where the robot is actually moving rather than parked at a
+crossing.
+
 ### Appearance augmentation
 
 Re-renders a clip under new lighting, weather and time-of-day conditions.

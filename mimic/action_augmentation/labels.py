@@ -17,6 +17,10 @@ A bare ``.npy`` holding an array is read positionally: ``(N, C)`` with ``C >= 3`
 is poses, of which only the leading ``(x, y, yaw)`` columns are used — any
 trailing columns are derived quantities and are ignored. ``(N, K, 3)`` is
 waypoints.
+
+A sidecar is looked for as ``<video stem>.npy`` / ``.npz`` / ``.json`` first,
+then under the conventional names in :data:`SIDECAR_NAMES` in the video's
+folder — recorded clips tend to hold several streams beside one pose file.
 """
 
 from __future__ import annotations
@@ -30,6 +34,19 @@ from . import trajectory as tj
 
 #: Sidecar suffixes tried, in order, when looking beside a video.
 SIDECAR_SUFFIXES = (".npy", ".npz", ".json")
+
+#: Recorded datasets often name the pose file after its contents rather than
+#: after the video, and keep several streams in one clip folder
+#: (``<uid>/rgb_pinhole.mp4`` + ``<uid>/poses_recorded.npy``). These names are
+#: tried in the video's folder once the ``<stem>.*`` forms have failed.
+SIDECAR_NAMES = (
+    "poses_recorded.npy",
+    "poses.npy",
+    "poses.npz",
+    "labels.npy",
+    "labels.npz",
+    "labels.json",
+)
 
 #: Frame rate assumed when a sidecar carries no timestamps.
 DEFAULT_FPS = 5.0
@@ -89,9 +106,14 @@ def find_sidecar(video_path: Path, explicit: Path | None = None) -> Path:
         tried.append(candidate.name)
         if candidate.is_file():
             return candidate
+    for name in SIDECAR_NAMES:
+        candidate = video_path.parent / name
+        tried.append(name)
+        if candidate.is_file():
+            return candidate
     raise FileNotFoundError(
-        f"No label sidecar beside {video_path.name} (tried {', '.join(tried)}). "
-        "Pass --labels to point at one explicitly."
+        f"No label sidecar for {video_path.name} (tried {', '.join(tried)} "
+        f"in {video_path.parent}). Pass --labels to point at one explicitly."
     )
 
 

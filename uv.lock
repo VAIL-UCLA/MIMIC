@@ -1040,6 +1040,7 @@ source = { editable = "." }
 dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "tqdm" },
 ]
 
 [package.optional-dependencies]
@@ -1115,6 +1116,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'appearance'" },
     { name = "torchvision", marker = "extra == 'action'" },
     { name = "torchvision", marker = "extra == 'appearance'" },
+    { name = "tqdm" },
     { name = "tqdm", marker = "extra == 'appearance'" },
     { name = "transformers", marker = "extra == 'action'" },
     { name = "transformers", marker = "extra == 'appearance'" },

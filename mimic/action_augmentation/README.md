@@ -64,6 +64,11 @@ derived heading, and neither knows anything about action labels.
 | `calibrate_scale.py` | ours | Corpus-level calibration CLI — one number over a set of clips |
 | `scales.py` | ours | Scale sidecar I/O, and how `--scale auto` resolves |
 
+Run it over a whole corpus with
+[`scripts/stage_2_action_augmentation.py`](../../scripts/stage_2_action_augmentation.py),
+which adds a progress bar, per-clip calibration, maneuver placement and a run
+manifest.
+
 ## Setup
 
 ```bash

@@ -98,3 +98,38 @@ def test_times_length_mismatch_is_rejected(tmp_path):
     np.savez(path, poses=_poses(5), times=np.zeros(4))
     with pytest.raises(ValueError, match="4 entries but there are 5"):
         lb.load_labels(path)
+
+
+def test_finds_a_pose_file_named_after_its_contents(tmp_path):
+    """Recorded clips keep several streams beside one pose file:
+    <uid>/rgb_pinhole.mp4 with <uid>/poses_recorded.npy."""
+    video = tmp_path / "rgb_pinhole.mp4"
+    video.touch()
+    sidecar = tmp_path / "poses_recorded.npy"
+    np.save(sidecar, _poses())
+    assert lb.find_sidecar(video) == sidecar
+
+
+def test_a_sidecar_named_after_the_video_wins(tmp_path):
+    video = tmp_path / "rgb_pinhole.mp4"
+    video.touch()
+    np.save(tmp_path / "poses_recorded.npy", _poses())
+    own = tmp_path / "rgb_pinhole.npy"
+    np.save(own, _poses())
+    assert lb.find_sidecar(video) == own
+
+
+def test_explicit_labels_beat_both(tmp_path):
+    video = tmp_path / "rgb_pinhole.mp4"
+    video.touch()
+    np.save(tmp_path / "poses_recorded.npy", _poses())
+    chosen = tmp_path / "elsewhere.npy"
+    np.save(chosen, _poses())
+    assert lb.find_sidecar(video, explicit=chosen) == chosen
+
+
+def test_missing_sidecar_names_the_folder_it_searched(tmp_path):
+    video = tmp_path / "rgb_pinhole.mp4"
+    video.touch()
+    with pytest.raises(FileNotFoundError, match="poses_recorded.npy"):
+        lb.find_sidecar(video)
