@@ -17,6 +17,12 @@ dev = [
     "ruff",
     "pytest",
 ]
+# Runtime for scripts/visualize_augmentation.py. No GPU and no models: it reads
+# the clips and the labels, so the trajectory comparison works before either
+# augmentation stage has been run.
+viz = [
+    "opencv-python",
+]
 # Runtime for mimic.action_augmentation (TrajectoryCrafter). Needs a CUDA GPU.
 # The label path (--labels_only) needs none of this, only numpy.
 action = [

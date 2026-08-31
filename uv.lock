@@ -1083,6 +1083,9 @@ dev = [
     { name = "pytest" },
     { name = "ruff" },
 ]
+viz = [
+    { name = "opencv-python" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1103,6 +1106,7 @@ requires-dist = [
     { name = "omegaconf", marker = "extra == 'appearance'" },
     { name = "opencv-python", marker = "extra == 'action'" },
     { name = "opencv-python", marker = "extra == 'appearance'" },
+    { name = "opencv-python", marker = "extra == 'viz'" },
     { name = "peft", marker = "extra == 'appearance'" },
     { name = "pillow", marker = "extra == 'action'" },
     { name = "pillow", marker = "extra == 'appearance'" },
@@ -1122,7 +1126,7 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'appearance'" },
     { name = "ultralytics", marker = "extra == 'appearance'" },
 ]
-provides-extras = ["dev", "action", "appearance"]
+provides-extras = ["dev", "viz", "action", "appearance"]
 
 [[package]]
 name = "mpmath"

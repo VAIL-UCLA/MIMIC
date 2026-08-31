@@ -442,3 +442,52 @@ def test_maneuver_start_stays_within_the_clip():
     poses, t = _straight_path(n=200)
     start, _ = tj.best_maneuver_start(poses, t, 4.0)
     assert start + 4.0 <= t[-1] + 1e-9
+
+
+# =====================================================================
+# Sizing the offset against speed
+# =====================================================================
+
+
+def test_peak_yaw_closed_form():
+    assert tj.peak_yaw(0.5, 4.0, 1.0) == pytest.approx(np.arctan2(0.5 * np.pi / 4.0, 1.0))
+
+
+def test_peak_yaw_of_a_stopped_robot_is_a_right_angle():
+    """No forward motion, so any sideways move is a 90 degree turn."""
+    assert tj.peak_yaw(0.5, 4.0, 0.0) == pytest.approx(np.pi / 2)
+
+
+@pytest.mark.parametrize("speed", [0.3, 1.0, 1.7, 3.0])
+def test_speed_relative_offset_holds_the_yaw_constant(speed):
+    """The whole point: the same demand on the robot at any speed."""
+    scale, horizon = 0.34, 4.0
+    strength = tj.strength_for_speed(scale, speed)
+    expected = np.arctan(scale * np.pi / horizon)
+    assert tj.peak_yaw(strength, horizon, speed) == pytest.approx(expected)
+
+
+def test_a_fixed_offset_does_not_hold_the_yaw_constant():
+    """The behaviour being replaced: a slow robot is asked to swerve far harder."""
+    slow = tj.peak_yaw(0.6, 4.0, 0.3)
+    fast = tj.peak_yaw(0.6, 4.0, 3.0)
+    assert np.degrees(slow) > 55.0
+    assert np.degrees(fast) < 10.0
+
+
+def test_speed_relative_offset_scales_with_speed():
+    assert tj.strength_for_speed(0.34, 2.0) == pytest.approx(2 * tj.strength_for_speed(0.34, 1.0))
+
+
+def test_speed_relative_offset_is_never_negative():
+    assert tj.strength_for_speed(-0.34, 2.0) >= 0.0
+    assert tj.strength_for_speed(0.34, -2.0) == 0.0
+
+
+def test_speed_relative_offset_measured_on_a_real_maneuver():
+    """End to end: build the path and read the yaw back off it."""
+    scale, horizon, speed = 0.34, 4.0, 2.0
+    poses, times = straight_path(n=161, fps=20.0, speed=speed)
+    strength = tj.strength_for_speed(scale, speed)
+    new, _ = tj.deviate_and_recover(poses, times, strength=strength, horizon=horizon)
+    assert np.abs(new[:, 2]).max() == pytest.approx(np.arctan(scale * np.pi / horizon), rel=2e-3)

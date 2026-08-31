@@ -81,7 +81,7 @@ def _last_error(output: str, code: int) -> str:
     return lines[-1] if lines else f"exit code {code}"
 
 
-def planned_strength(video: Path, seed: int, args) -> tuple[int, float]:
+def planned_strength(video: Path, seed: int, speed: float, args) -> tuple[int, float]:
     """The seed and offset this clip will actually get.
 
     Mirrors what ``augment_action`` samples, so the plan printed here and the
@@ -91,14 +91,15 @@ def planned_strength(video: Path, seed: int, args) -> tuple[int, float]:
     strength = aa.sample_strength(
         clip_seed, args.strength,
         tuple(args.strength_range) if args.strength_range else None,
+        args.strength_scale, speed,
     )
     return clip_seed, strength
 
 
 def describe(job: dict, args) -> str:
     side = "left" if job["strength"] >= 0 else "right"
-    return (f"{job['strength']:+.2f} m {side}, {args.horizon:.0f}s from "
-            f"t={job['start_time']:.1f}s")
+    return (f"{job['strength']:+.2f} m {side} ({job['yaw_deg']:.0f} deg), "
+            f"{args.horizon:.0f}s from t={job['start_time']:.1f}s")
 
 
 def ensure_scale(video: Path, args, bar) -> tuple[float | None, str]:
@@ -158,7 +159,13 @@ def parse_args(argv=None):
                      help="Peak lateral offset in meters. Positive left, negative right.")
     man.add_argument("--strength_range", type=float, nargs=2, default=None,
                      metavar=("LO", "HI"),
-                     help="Sample |offset| from [LO, HI] and coin-flip the side.")
+                     help="Sample |offset| from [LO, HI] meters and coin-flip the side.")
+    man.add_argument("--strength_scale", type=float, default=None,
+                     help="Size the offset as scale * the clip's top speed in the "
+                          "maneuver window, scale in seconds. This is the default "
+                          f"({tj.DEFAULT_STRENGTH_SCALE_S}s): a fixed metric offset asks "
+                          "the same swerve of a robot crawling at 0.3 m/s as of one at "
+                          "3 m/s, and the slow one would have to turn 58 degrees to do it.")
     man.add_argument("--horizon", type=float, default=tj.DEFAULT_HORIZON_S,
                      help="Maneuver duration in seconds; the peak lands at half of it.")
     man.add_argument("--start_time", type=float, default=None,
@@ -186,31 +193,52 @@ def parse_args(argv=None):
     render.add_argument("--device", default="cuda:0")
 
     args = parser.parse_args(argv)
-    if args.strength is None and args.strength_range is None:
-        args.strength_range = [0.3, 0.8]
+    given = [n for n, v in (("--strength", args.strength),
+                            ("--strength_range", args.strength_range),
+                            ("--strength_scale", args.strength_scale)) if v is not None]
+    if len(given) > 1:
+        parser.error(f"{' and '.join(given)} are mutually exclusive")
+    if not given:
+        args.strength_scale = tj.DEFAULT_STRENGTH_SCALE_S
     return args
 
 
-def maneuver_window(video: Path, args) -> tuple[float, float]:
-    """Where in this clip to put the maneuver, and how moving that window is."""
+def maneuver_window(video: Path, args) -> tuple[float, float, float]:
+    """Where in this clip to put the maneuver, how usable it is, and how fast.
+
+    The speed is the maximum over the chosen window, which is what
+    ``--strength_scale`` sizes the offset against.
+    """
     sidecar = label_io.find_sidecar(video)
     data = label_io.load_labels(sidecar, fps=args.fps or label_io.DEFAULT_FPS)
+    speeds = tj.path_speed(data.poses, data.times)
+
     if args.start_time is not None:
-        window = (data.times >= args.start_time) & (
-            data.times <= args.start_time + args.horizon
+        start = float(args.start_time)
+        mask = (data.times >= start) & (data.times <= start + args.horizon)
+        usable = float((speeds[mask] > args.min_speed).mean()) if mask.any() else 0.0
+    else:
+        start, usable = tj.best_maneuver_start(
+            data.poses, data.times, args.horizon, args.min_speed
         )
-        speed = tj.path_speed(data.poses, data.times)
-        moving = float((speed[window] > args.min_speed).mean()) if window.any() else 0.0
-        return float(args.start_time), moving
-    return tj.best_maneuver_start(data.poses, data.times, args.horizon, args.min_speed)
+        mask = (data.times >= start) & (data.times <= start + args.horizon)
+
+    speed = float(speeds[mask].max()) if mask.any() else float(speeds.max(initial=0.0))
+    return start, usable, speed
 
 
 def build_argv(video: Path, target: Path, seed: int, scale, start_time: float,
-               args) -> list[str]:
+               strength: float, args) -> list[str]:
+    """Argv for one maneuver.
+
+    The offset is passed explicitly rather than re-sampled downstream, so the
+    plan printed here and the run that follows cannot disagree.
+    """
     argv = [
         "--input", str(video),
         "--output", str(target),
         "--output_labels", str(target.with_suffix(".npz")),
+        "--strength", str(strength),
         "--horizon", str(args.horizon),
         "--start_time", str(start_time),
         "--profile", args.profile,
@@ -224,10 +252,6 @@ def build_argv(video: Path, target: Path, seed: int, scale, start_time: float,
         argv.append("--fixed_seed")
     if args.fps:
         argv += ["--fps", str(args.fps)]
-    if args.strength is not None:
-        argv += ["--strength", str(args.strength)]
-    elif args.strength_range:
-        argv += ["--strength_range", str(args.strength_range[0]), str(args.strength_range[1])]
     if args.overwrite:
         argv.append("--overwrite")
     if args.labels_only:
@@ -253,7 +277,7 @@ def main(argv=None) -> int:
     jobs, unusable = [], []
     for clip in clips:
         try:
-            start, moving = maneuver_window(clip, args)
+            start, moving, speed = maneuver_window(clip, args)
         except (FileNotFoundError, ValueError) as exc:
             unusable.append({"clip": clip_label(clip), "status": "failed",
                              "error": str(exc)})
@@ -268,10 +292,17 @@ def main(argv=None) -> int:
             continue
         for index in range(args.variants):
             seed = args.seed + index
-            clip_seed, strength = planned_strength(clip, seed, args)
+            clip_seed, strength = planned_strength(clip, args.seed, speed, args)
+            # Variants alternate sides. Under --strength_scale the magnitude is
+            # fixed by the clip's speed, so the side is the only thing left to
+            # vary — and drawing it independently would give two variants the
+            # same side half the time.
+            if index % 2:
+                strength = -strength
             jobs.append({"clip": clip, "index": index, "seed": seed,
                          "clip_seed": clip_seed, "strength": strength,
-                         "start_time": start, "moving": moving,
+                         "start_time": start, "moving": moving, "speed": speed,
+                         "yaw_deg": np.degrees(tj.peak_yaw(strength, args.horizon, speed)),
                          "target": out_dir / variant_name(clip, index, args.variants)})
 
     if not jobs:
@@ -286,14 +317,21 @@ def main(argv=None) -> int:
     placement = ("fixed at --start_time" if args.start_time is not None
                  else f"auto, t={starts.min():.1f} .. {starts.max():.1f}s "
                       f"(first window with the robot moving)")
+    yaws = np.array([j["yaw_deg"] for j in jobs])
+    sizing = (f"{args.strength_scale}s x window top speed "
+              f"({np.array([j['speed'] for j in jobs]).min():.1f}"
+              f"-{np.array([j['speed'] for j in jobs]).max():.1f} m/s)"
+              if args.strength_scale is not None else "absolute meters")
     banner(STAGE, TITLE, {
         "clips": f"{len(clips)} from {args.input}"
                  + (f"  ({len(unusable)} unusable)" if unusable else ""),
         "variants": f"{args.variants} per clip  ({len(jobs)} maneuvers)",
         "maneuver": f"{args.mode}, {args.horizon:.0f}s horizon, {args.profile} profile",
         "placement": placement,
+        "sizing": sizing,
         "offsets": f"{offsets.min():+.2f} .. {offsets.max():+.2f} m  "
                    f"({(offsets > 0).sum()} left, {(offsets < 0).sum()} right)",
+        "peak yaw": f"{yaws.min():.1f} .. {yaws.max():.1f} deg",
         "video": "skipped (--labels_only)" if args.labels_only
                  else f"TrajectoryCrafter, {args.diffusion_inference_steps} steps",
         "output": out_dir,
@@ -346,7 +384,7 @@ def main(argv=None) -> int:
             try:
                 with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
                     code = aa.main(build_argv(clip, target, job["seed"], scale,
-                                              job["start_time"], args))
+                                              job["start_time"], job["strength"], args))
                 record["status"] = "written" if code == 0 else "failed"
                 if code != 0:
                     record["error"] = _last_error(buffer.getvalue(), code)

@@ -133,3 +133,40 @@ def test_missing_sidecar_names_the_folder_it_searched(tmp_path):
     video.touch()
     with pytest.raises(FileNotFoundError, match="poses_recorded.npy"):
         lb.find_sidecar(video)
+
+
+# --- offset sizing ---------------------------------------------------
+
+
+def test_sample_strength_absolute_wins():
+    from mimic.action_augmentation import augment_action as aa
+
+    assert aa.sample_strength(1, strength=0.42) == pytest.approx(0.42)
+
+
+def test_sample_strength_from_speed():
+    from mimic.action_augmentation import augment_action as aa
+
+    value = aa.sample_strength(1, strength_scale=0.34, speed=2.0)
+    assert abs(value) == pytest.approx(0.68)
+
+
+def test_sample_strength_from_speed_needs_a_speed():
+    from mimic.action_augmentation import augment_action as aa
+
+    with pytest.raises(ValueError, match="needs the clip's speed"):
+        aa.sample_strength(1, strength_scale=0.34)
+
+
+def test_sample_strength_needs_some_sizing():
+    from mimic.action_augmentation import augment_action as aa
+
+    with pytest.raises(ValueError, match="strength_scale or strength_range"):
+        aa.sample_strength(1)
+
+
+def test_sample_strength_takes_both_sides_over_a_corpus():
+    from mimic.action_augmentation import augment_action as aa
+
+    signs = [np.sign(aa.sample_strength(s, strength_range=(0.3, 0.8))) for s in range(400)]
+    assert 0.4 < signs.count(1.0) / len(signs) < 0.6

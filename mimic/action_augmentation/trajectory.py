@@ -412,6 +412,41 @@ def best_maneuver_start(
     return best_start, max(best_fraction, 0.0)
 
 
+#: Peak offset as a multiple of speed, in seconds, when the offset is asked for
+#: relative to how fast the robot is going. 0.34 s puts the peak heading change
+#: at about 15 degrees over the default 4 s horizon.
+DEFAULT_STRENGTH_SCALE_S = 0.34
+
+
+def peak_yaw(strength: float, horizon: float, speed: float) -> float:
+    """Heading change, in radians, that an offset of ``strength`` induces.
+
+    A raised-cosine offset ``d(t) = s/2 (1 - cos 2*pi*t/H)`` has a peak lateral
+    rate of ``s*pi/H``, so against a forward speed ``v`` the heading peaks at
+    ``atan(s*pi / (H*v))`` — on a straight path; a recorded turn adds to it.
+    """
+    if speed <= 0.0:
+        return float(np.pi / 2.0)
+    return float(np.arctan2(abs(strength) * np.pi / horizon, speed))
+
+
+def strength_for_speed(scale: float, speed: float) -> float:
+    """Peak offset for a robot travelling at ``speed``, as ``scale * speed``.
+
+    Sizing the offset in meters alone asks the same swerve of a robot crawling
+    at 0.3 m/s as of one running at 3 m/s, and the slow one cannot do it: the
+    heading needed goes as ``atan(s*pi / (H*v))``, which approaches 90 degrees
+    as ``v`` falls. Tying the offset to speed makes that heading constant —
+    ``atan(scale*pi / H)``, whatever the robot is doing — so the maneuver stays
+    equally aggressive across a corpus of mixed speeds instead of being gentle
+    when fast and impossible when slow.
+
+    ``scale`` is in seconds: it is how long the robot would take to cover the
+    peak offset at its current speed.
+    """
+    return float(abs(scale) * max(float(speed), 0.0))
+
+
 def deviate_and_recover(
     poses: np.ndarray,
     times: np.ndarray,

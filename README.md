@@ -34,6 +34,7 @@ Optional extras:
 |---|---|---|
 | `appearance` | `uv sync --extra appearance` | Appearance augmentation (torch, diffusers, ultralytics — needs a CUDA GPU) |
 | `action` | `uv sync --extra action` | Action augmentation video synthesis (needs a CUDA GPU; the label path needs neither) |
+| `viz` | `uv sync --extra viz` | The augmentation comparison script (opencv; no GPU) |
 | `dev` | `uv sync --extra dev` | ruff, pytest |
 
 If you only want to run inference with the released ONNX policy, you can skip
@@ -140,6 +141,59 @@ Stage 1 loads the relighting model once and reuses it across the corpus. Stage 2
 calibrates any clip that lacks a depth scale before rendering it, and places each
 maneuver on a stretch where the robot is actually moving rather than parked at a
 crossing.
+
+The offset is sized against the clip's speed by default, as
+`--strength_scale × top speed in the window`, rather than as a fixed number of
+meters. A fixed offset asks the same swerve of a robot crawling at 0.3 m/s as of
+one running at 3 m/s, and the heading it needs goes as `atan(s·π / (H·v))`:
+
+| speed | fixed 0.6 m | scaled, 0.34 s |
+|---|---|---|
+| 0.3 m/s | 0.60 m → **58°** | 0.10 m → 15° |
+| 1.0 m/s | 0.60 m → 25° | 0.34 m → 15° |
+| 3.0 m/s | 0.60 m → 9° | 1.02 m → 15° |
+
+Scaling keeps the maneuver equally aggressive across a corpus of mixed speeds.
+Variants alternate sides, so `--variants 2` gives every clip one left and one
+right at the same magnitude.
+
+### Seeing what changed
+
+```bash
+uv sync --extra viz     # opencv only -- no GPU, no models
+
+uv run python scripts/visualize_augmentation.py \
+    --input assets/clips --appearance_dir out/appearance \
+    --action_dir out/action --output out/viz --fps 20
+```
+
+Writes one mp4 per clip with five panels side by side — the recorded frame, the
+recorded label bird's-eye, the relit frame, the re-rendered frame, and the
+augmented label over the recorded one. `--contact_sheet` writes the same layout
+as a PNG.
+
+![Augmentation comparison](assets/examples/augmentation_compare.png)
+
+Three moments from `assets/clips/38aee4d8`, spanning one 4 s maneuver: it leaves
+the recorded path, reaches 0.93 m off course at the halfway point, and rejoins.
+The augmented track (orange) is drawn over the recorded one (green) in the last
+panel, and both are re-expressed against the *recorded* pose — otherwise the two
+labels' differing ego frames turn a 15° heading difference into metres of
+apparent deviation across a 12 m lookahead.
+
+The two middle panels are placeholders here because neither GPU stage has been
+run against these clips yet; the script draws them rather than dropping the
+column, so the layout stays fixed and what is missing is obvious. Regenerate the
+figure with:
+
+```bash
+uv run python scripts/visualize_augmentation.py \
+    --input assets/clips/38aee4d8/rgb_pinhole.mp4 --action_dir out/action \
+    --output assets/examples --fps 20 \
+    --start_frame 178 --frames 81 --frame_stride 20 --contact_sheet --sheet_rows 3
+
+mv assets/examples/38aee4d8_compare.png assets/examples/augmentation_compare.png
+```
 
 ### Appearance augmentation
 

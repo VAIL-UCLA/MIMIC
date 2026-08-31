@@ -82,14 +82,34 @@ def sample_strength(
     seed: int,
     strength: float | None = None,
     strength_range: tuple[float, float] | None = None,
+    strength_scale: float | None = None,
+    speed: float | None = None,
 ) -> float:
-    """Pick the peak lateral offset in meters. Sign (left/right) is coin-flipped."""
+    """Pick the peak lateral offset in meters. Sign (left/right) is coin-flipped.
+
+    Exactly one of the three sizing options applies, in this order:
+
+    ``strength``
+        An absolute offset in meters, used as given.
+    ``strength_scale``
+        An offset relative to ``speed``, as ``scale * speed`` — see
+        :func:`~mimic.action_augmentation.trajectory.strength_for_speed`. Only
+        the side is drawn; the magnitude follows the clip.
+    ``strength_range``
+        An absolute offset drawn from ``[lo, hi]`` meters.
+    """
     if strength is not None:
         return float(strength)
-    if strength_range is None:
-        raise ValueError("pass either strength or strength_range")
-    lo, hi = sorted(abs(v) for v in strength_range)
+
     rng = random.Random(seed)
+    if strength_scale is not None:
+        if speed is None:
+            raise ValueError("strength_scale needs the clip's speed")
+        return tj.strength_for_speed(strength_scale, speed) * rng.choice((-1.0, 1.0))
+
+    if strength_range is None:
+        raise ValueError("pass strength, strength_scale or strength_range")
+    lo, hi = sorted(abs(v) for v in strength_range)
     return rng.uniform(lo, hi) * rng.choice((-1.0, 1.0))
 
 
@@ -160,13 +180,19 @@ def build_c2w_poses(
     return torch.cat(poses, dim=0)
 
 
-def make_get_poses(lateral: np.ndarray, yaw: np.ndarray, scale: float):
+def make_get_poses(lateral: np.ndarray, yaw: np.ndarray, scale: float, stride: int = 1):
     """Build a ``get_poses`` replacement that injects our camera path.
 
     Upstream's own ``get_poses`` only supports a single interpolated target pose
     or a spherical theta/phi/r keyframe file; neither expresses a per-frame
     ground-plane maneuver. Binding this in place of it leaves the submodule
     untouched.
+
+    ``stride`` must match what upstream's reader was given, because the deltas
+    are indexed against the frames it actually read — the leading
+    ``num_frames * stride`` of the clip — rather than stretched across the whole
+    clip. Stretching them would hang a maneuver from one moment of the clip onto
+    imagery from another.
     """
 
     def get_poses(self, opts, depths, num_frames):
@@ -199,10 +225,11 @@ def make_get_poses(lateral: np.ndarray, yaw: np.ndarray, scale: float):
             .unsqueeze(0)
         )
 
-        # Resample our per-frame deltas onto the renderer's frame count.
-        idx = np.linspace(0, len(lateral) - 1, num_frames)
-        lat_r = np.interp(idx, np.arange(len(lateral)), lateral)
-        yaw_r = np.interp(idx, np.arange(len(yaw)), np.unwrap(yaw))
+        # Index the deltas against the frames upstream's reader actually took:
+        # the leading num_frames * stride of the clip, sampled at stride.
+        idx = np.clip(np.arange(num_frames) * stride, 0, len(lateral) - 1)
+        lat_r = lateral[idx]
+        yaw_r = np.unwrap(yaw)[idx]
 
         poses = build_c2w_poses(tc_module, lat_r, yaw_r, c2w_init, scale, opts.device)
         poses[:, 2, 3] = poses[:, 2, 3] + radius
@@ -246,6 +273,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     man.add_argument("--strength_range", type=float, nargs=2, default=None,
                      metavar=("LO", "HI"),
                      help="Sample |offset| from [LO, HI] and coin-flip the side.")
+    man.add_argument("--strength_scale", type=float, default=None,
+                     help="Size the offset relative to the clip's speed, as "
+                          "scale * max speed in the maneuver window (scale is in "
+                          "seconds). Keeps the heading the maneuver demands constant "
+                          f"across a corpus of mixed speeds; {tj.DEFAULT_STRENGTH_SCALE_S} "
+                          "is about 15 deg over a 4 s horizon.")
     man.add_argument("--horizon", type=float, default=tj.DEFAULT_HORIZON_S,
                      help="Maneuver duration in seconds; the peak lands at half of it.")
     man.add_argument("--start_time", type=float, default=0.0,
@@ -277,10 +310,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     render.add_argument("--device", type=str, default="cuda:0")
 
     args = parser.parse_args(argv)
-    if args.strength is None and args.strength_range is None:
-        parser.error("pass --strength or --strength_range")
-    if args.strength is not None and args.strength_range is not None:
-        parser.error("--strength and --strength_range are mutually exclusive")
+    given = [name for name, value in (("--strength", args.strength),
+                                      ("--strength_range", args.strength_range),
+                                      ("--strength_scale", args.strength_scale))
+             if value is not None]
+    if not given:
+        parser.error("pass --strength, --strength_range or --strength_scale")
+    if len(given) > 1:
+        parser.error(f"{' and '.join(given)} are mutually exclusive")
     return args
 
 
@@ -323,9 +360,20 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     seed = args.seed if args.fixed_seed else clip_seed(args.seed, str(input_path))
-    strength = sample_strength(
-        seed, args.strength, tuple(args.strength_range) if args.strength_range else None
+    window = (data.times >= args.start_time) & (
+        data.times <= args.start_time + args.horizon
     )
+    speeds = tj.path_speed(data.poses, data.times)
+    reference_speed = float(speeds[window].max()) if window.any() else float(speeds.max())
+    try:
+        strength = sample_strength(
+            seed, args.strength,
+            tuple(args.strength_range) if args.strength_range else None,
+            args.strength_scale, reference_speed,
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
     result = tj.build_augmented_label(
         data.poses, data.times,
@@ -338,8 +386,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Labels:   {sidecar.name}"
           + ("  (poses reconstructed from waypoints — approximate)" if data.reconstructed else ""))
     print(f"Clip:     {len(data)} frames, {data.duration:.2f}s")
+    sizing = (f"scale {args.strength_scale}s x {reference_speed:.2f} m/s"
+              if args.strength_scale is not None else "absolute")
     print(f"Maneuver: {args.mode}, {strength:+.2f} m peak "
-          f"({'left' if strength >= 0 else 'right'}), {args.horizon:.1f}s horizon, {args.profile}")
+          f"({'left' if strength >= 0 else 'right'}), {args.horizon:.1f}s horizon, "
+          f"{args.profile}, {sizing}")
     print(f"Seed:     {seed}" + ("" if args.fixed_seed else f" (derived from {args.seed} + path)"))
     print(f"Yaw:      {np.degrees(np.abs(yaw)).max():.2f} deg peak")
     print(f"Label:    {result['waypoints'].shape} waypoints -> {output_labels.name}")
@@ -388,6 +439,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(f"Scale:    {scale:.4f} depth units/m ({provenance})")
+
+    covered = TC_VIDEO_LENGTH * args.stride
+    active = np.flatnonzero(np.abs(lateral) > 1e-6)
+    if len(active) and active[-1] >= covered:
+        span = covered / max(args.fps, 1e-6)
+        print(
+            f"warning: the renderer reads only the leading {covered} frames "
+            f"({span:.1f}s at {args.fps:g} fps), but the maneuver runs to frame "
+            f"{active[-1]} (t={active[-1] / max(args.fps, 1e-6):.1f}s). The video will "
+            f"not show it. Either move it with --start_time, or raise --stride to "
+            f"{int(np.ceil((active[-1] + 1) / TC_VIDEO_LENGTH))} so the window reaches it.",
+            file=sys.stderr,
+        )
 
     return _render(args, tc_root, input_path, output_path, lateral, yaw, seed, scale)
 
@@ -456,7 +520,9 @@ def _render(args, tc_root: Path, input_path: Path, output_path: Path,
 
         crafter = TrajCrafter(opts)
         # Bind our camera path in place of upstream's pose generator.
-        crafter.get_poses = make_get_poses(lateral, yaw, scale).__get__(crafter)
+        crafter.get_poses = make_get_poses(
+            lateral, yaw, scale, args.stride
+        ).__get__(crafter)
         crafter.infer_gradual(opts)
     finally:
         os.chdir(cwd)

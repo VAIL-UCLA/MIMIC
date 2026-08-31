@@ -273,6 +273,7 @@ second knob.
 |---|---|---|
 | `--strength` | — | Peak lateral offset in meters; positive left, negative right |
 | `--strength_range LO HI` | — | Sample `|offset|` from the range, side coin-flipped |
+| `--strength_scale K` | — | Offset as `K × speed`, K in seconds. Holds the heading the maneuver demands at `atan(K·π / H)` whatever the robot's speed, instead of asking a slow robot for a swerve it cannot make |
 | `--horizon` | 4.0 | Maneuver duration in seconds; peak at half |
 | `--start_time` | 0.0 | When the maneuver begins, in clip time |
 | `--profile` | `raised_cosine` | `raised_cosine` (smooth, zero lateral velocity at both ends and the peak), `smoothstep`, or `triangle` (velocity steps at the peak — baseline only) |
