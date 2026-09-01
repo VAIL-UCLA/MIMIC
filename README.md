@@ -174,6 +174,11 @@ as a PNG.
 
 ![Augmentation comparison](assets/examples/augmentation_compare.png)
 
+The same five panels as a video, over the whole 193-frame window:
+[`assets/examples/augmentation_compare.mp4`](assets/examples/augmentation_compare.mp4).
+
+<video src="assets/examples/augmentation_compare.mp4" controls width="100%"></video>
+
 Four moments from `assets/clips/38aee4d8`, one second apart, spanning a single
 4 s maneuver. The offset follows the raised cosine exactly:
 
@@ -206,13 +211,20 @@ numbers below run 0..192 rather than starting at 178 in the original recording.
 Regenerate the figure with:
 
 ```bash
+# the contact sheet: four moments one second apart
 uv run python scripts/visualize_augmentation.py \
     --input assets/clips/38aee4d8 \
     --action_dir out/action --appearance_dir out/appearance \
     --output assets/examples \
     --frames 61 --frame_stride 20 --contact_sheet --sheet_rows 4
-
 mv assets/examples/38aee4d8_compare.png assets/examples/augmentation_compare.png
+
+# the video: every frame of the window
+uv run python scripts/visualize_augmentation.py \
+    --input assets/clips/38aee4d8 \
+    --action_dir out/action --appearance_dir out/appearance \
+    --output out/viz
+mv out/viz/38aee4d8_compare.mp4 assets/examples/augmentation_compare.mp4
 ```
 
 ### Appearance augmentation
