@@ -73,6 +73,9 @@ appearance = [
     "pillow",
     "omegaconf",
     "ultralytics",
+    # Light-A-Video reads clips through moviepy.editor, which 2.x removed.
+    # Upstream pins 1.0.3.
+    "moviepy>=1.0,<2",
     "ftfy",
     "tqdm",
 ]

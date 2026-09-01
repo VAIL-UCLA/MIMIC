@@ -170,3 +170,26 @@ bash mimic/appearance_augmentation/infer_all.sh <input_dir> <output_dir>
 | `--detail_strength` | 0.7 | High-frequency detail carried over from the original |
 | `--no_yolo` | off | Skip person detection; faster, relights the full frame |
 | `--fast` | off | max_side 512, strength 0.25, 6 steps |
+
+## Running on a 16 GB card
+
+Two models are live at once — the IC-Light relighting stack stays resident while
+the video model runs — so the default path does not fit. `--low_gpu_memory_mode`
+makes it fit, and does three things:
+
+| What | Saves | Why |
+|---|---|---|
+| Encode the prompt once, free the text encoder | ~10.6 GB | Wan's text encoder is UMT5-XXL, four times the size of the transformer it feeds. The prompt is identical for every clip and segment, so it has one job for the whole run. |
+| `enable_model_cpu_offload` on the video model | ~2.6 GB | The relighting stack needs the card for the whole run. |
+| VAE slicing and tiling | — | `prepare_latents` hands the 3D causal-conv encoder all 81 frames at once. |
+
+Order matters for the first one. The encoder has to be used and dropped *before*
+`enable_model_cpu_offload` installs accelerate's hooks: once hooked, accelerate
+holds its own reference, clearing the attribute frees nothing, and the weights
+ride onto the card for every call. Measured on a 16 GB card, doing it in the
+right order leaves 0.01 GB resident where the wrong order left 12.58 GB.
+
+Lowering `--max_side` does *not* help here, which is worth knowing before
+reaching for it: the peak is set by the 81-frame chunk, not the resolution, and
+480 and 320 both peaked at 12.9 GB.
+

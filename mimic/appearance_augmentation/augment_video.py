@@ -112,6 +112,8 @@ def build_pipeline_args(
     no_yolo: bool = False,
     upscaler: str = "none",
     compile_vdm: bool = False,
+    low_gpu_memory_mode: bool = False,
+    vdm_prompt: str | None = None,
     models_dir: Path | None = None,
 ) -> SimpleNamespace:
     """Build the config object consumed by ``lav_randomize_video.load_pipeline``.
@@ -130,6 +132,8 @@ def build_pipeline_args(
         gamma=gamma,
         fg_preserve=0.0 if no_yolo else fg_preserve,
         detail_strength=detail_strength,
+        low_gpu_memory_mode=low_gpu_memory_mode,
+        vdm_prompt=vdm_prompt,
         no_yolo=no_yolo,
         yolo_model=str(models / "yolov8n.pt"),
         upscaler=upscaler,

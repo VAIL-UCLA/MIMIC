@@ -89,3 +89,61 @@ def test_render_output_detects_a_finished_clip(tmp_path):
     folder.mkdir()
     (folder / "gen.mp4").write_bytes(b"")
     assert stage2.render_output(target).exists()
+
+
+# ---------------------------------------------------------------------------
+# Aligning a full-clip stage against a windowed one
+#
+# Stage 1 relights the whole recording; stage 2 may have rendered only a window
+# of it. Both outputs are indexed by frame number, so without adding the
+# window's offset back the relit panel shows a moment seconds from the rest.
+# ---------------------------------------------------------------------------
+
+
+def _viz():
+    import visualize_augmentation
+
+    return visualize_augmentation
+
+
+def test_window_offset_is_zero_for_an_unwindowed_clip(tmp_path):
+    clip = tmp_path / "rgb_pinhole.mp4"
+    assert _viz().window_offset(clip, clip) == 0
+
+
+def test_window_offset_reads_the_bundle_provenance(tmp_path):
+    import json
+
+    bundle = tmp_path / "_windows" / "38aee4d8"
+    bundle.mkdir(parents=True)
+    (bundle / "meta.json").write_text(json.dumps({
+        "fps": 20.0,
+        "window": {"start": 178, "length": 49, "stride": 4},
+        "source_frames": [178, 371],
+    }))
+    source = bundle / "clip.mp4"
+    clip = tmp_path / "38aee4d8" / "rgb_pinhole.mp4"
+    assert _viz().window_offset(source, clip) == 178
+
+
+def test_window_offset_falls_back_to_the_window_start(tmp_path):
+    import json
+
+    bundle = tmp_path / "_windows" / "09294dbb"
+    bundle.mkdir(parents=True)
+    (bundle / "meta.json").write_text(json.dumps({
+        "window": {"start": 152, "length": 49, "stride": 4},
+    }))
+    source = bundle / "clip.mp4"
+    clip = tmp_path / "09294dbb" / "rgb_pinhole.mp4"
+    assert _viz().window_offset(source, clip) == 152
+
+
+def test_window_offset_survives_a_missing_or_broken_meta(tmp_path):
+    bundle = tmp_path / "_windows" / "x"
+    bundle.mkdir(parents=True)
+    source = bundle / "clip.mp4"
+    clip = tmp_path / "x" / "rgb_pinhole.mp4"
+    assert _viz().window_offset(source, clip) == 0
+    (bundle / "meta.json").write_text("{not json")
+    assert _viz().window_offset(source, clip) == 0

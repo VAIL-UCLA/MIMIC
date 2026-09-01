@@ -293,6 +293,32 @@ def labelled_source(label_path: Path | None, clip: Path) -> Path:
     return candidate if candidate.is_file() else clip
 
 
+def window_offset(source: Path, clip: Path) -> int:
+    """Frame of ``clip`` that ``source``'s first frame corresponds to.
+
+    Stage 1 runs on the whole recording, but stage 2 may have windowed it. Both
+    outputs are then indexed by frame number, and those numbers mean different
+    moments unless the window's offset is added back — the relit panel would
+    otherwise show a point seconds away from the rest of the row.
+    """
+    if source == clip:
+        return 0
+    meta = source.parent / "meta.json"
+    if not meta.is_file():
+        return 0
+    try:
+        blob = json.loads(meta.read_text())
+    except (OSError, ValueError):
+        return 0
+    span = blob.get("source_frames")
+    if isinstance(span, list) and span and isinstance(span[0], int):
+        return span[0]
+    window = blob.get("window")
+    if isinstance(window, dict) and isinstance(window.get("start"), int):
+        return window["start"]
+    return 0
+
+
 def visualize_clip(clip: Path, args) -> dict:
     name = clip_label(clip)
     record = {"clip": name}
@@ -323,6 +349,9 @@ def visualize_clip(clip: Path, args) -> dict:
     record["appearance"] = str(appearance_path) if appearance_path else None
     record["action"] = str(action_path) if action_path else None
 
+    # Stage 1 runs on the full recording; the action label may describe only a
+    # window of it. Shift into the full clip's numbering for the relit panel.
+    frame_offset = window_offset(source, clip)
     appearance_frames = read_all_frames(appearance_path) if appearance_path else []
     action_frames = read_all_frames(action_path) if action_path else []
 
@@ -355,7 +384,7 @@ def visualize_clip(clip: Path, args) -> dict:
                    bev_panel(original_wp, note=f"{speed[i]:.1f} m/s"), False)]
 
         if appearance_frames:
-            j = min(i, len(appearance_frames) - 1)
+            j = min(i + frame_offset, len(appearance_frames) - 1)
             panels.append(("appearance augmented", fit_panel(appearance_frames[j]), True))
         else:
             panels.append(("appearance augmented",
@@ -380,10 +409,10 @@ def visualize_clip(clip: Path, args) -> dict:
             rec_future = future_in_frame(
                 original.poses, original.times, original.label_times, i, ref
             )
-            offset = lateral_offset_at(original.poses, augmented.poses, i)
+            deviation = lateral_offset_at(original.poses, augmented.poses, i)
             panels.append(("trajectory (augmented)",
                            bev_panel(aug_future, reference=rec_future,
-                                     note=f"{offset:+.2f} m off course"), False))
+                                     note=f"{deviation:+.2f} m off course"), False))
         else:
             panels.append(("trajectory (augmented)",
                            placeholder(PANEL_H, PANEL_H,

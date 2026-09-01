@@ -16,6 +16,7 @@ Usage:
         [--save_dir output_random] [--n_lights 5] [--fast] [--compile] [--seed 42]
 """
 
+import gc
 import os
 import argparse
 import glob
@@ -551,6 +552,10 @@ def load_pipeline(args) -> PipelineState:
     state.vdm_model = getattr(args, "vdm_model", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers")
     state.ic_light_model = getattr(args, "ic_light_model", "./models/iclight_sd15_fc.safetensors")
     state.do_compile = getattr(args, "compile", False)
+    state.low_gpu_memory_mode = getattr(args, "low_gpu_memory_mode", False)
+    # Needed before the pipeline is offloaded so the prompt can be encoded while
+    # the text encoder is still free to move; callers may also set it later.
+    state.vdm_prompt = getattr(args, "vdm_prompt", None)
     state.num_for_model = WAN_MODEL_NUM_FRAMES
 
     print("Loading models …")
@@ -561,7 +566,25 @@ def load_pipeline(args) -> PipelineState:
         state.vdm_model, vae=vae_wan, torch_dtype=adopted_dtype,
     )
     pipe.scheduler = FlowMatchEulerDiscreteScheduler(shift=3.0)
-    pipe = pipe.to(device=device, dtype=adopted_dtype)
+    pipe = pipe.to(dtype=adopted_dtype)
+    if state.low_gpu_memory_mode:
+        # Encode the prompt and drop the text encoder *before* any offload hook
+        # exists. Once enable_model_cpu_offload has hooked it, accelerate holds
+        # its own reference and clearing the attribute frees nothing.
+        _cache_prompt_embeds(state, pipe, device, adopted_dtype)
+        # The relighting UNet and the video model are both resident for the
+        # whole run. Holding Wan on the card as well needs more than a 16 GB
+        # card has, so hand it back between calls.
+        pipe.enable_model_cpu_offload(device=device)
+        # The Wan VAE is a 3D causal-conv encoder, and prepare_latents hands it
+        # the whole 81-frame chunk at once. That single encode is the peak, and
+        # it barely moves with --max_side, so tiling it is what actually fits.
+        for method in ("enable_slicing", "enable_tiling"):
+            function = getattr(pipe.vae, method, None)
+            if callable(function):
+                function()
+    else:
+        pipe = pipe.to(device=device)
     pipe.vae.requires_grad_(False)
     pipe.transformer.requires_grad_(False)
     if state.do_compile and hasattr(torch, "compile"):
@@ -708,6 +731,48 @@ def load_pipeline(args) -> PipelineState:
     return state
 
 
+def _cache_prompt_embeds(state, pipe, device, dtype) -> None:
+    """Encode the video model's prompt once, then free its text encoder.
+
+    Wan's text encoder is UMT5-XXL: 10.58 GiB, four times the transformer it
+    feeds. The prompt and negative prompt are identical for every clip and every
+    segment, so it has exactly one job for the whole run.
+
+    Timing matters. Done here the GPU is still empty, so the encoder can be
+    moved on alone, used, and dropped. Done after ``enable_model_cpu_offload``
+    it would be hooked by accelerate, which keeps its own reference — clearing
+    the attribute then frees nothing, and the weights ride onto the card for
+    every call alongside the relighting stack.
+    """
+    prompt = getattr(state, "vdm_prompt", None)
+    if not prompt or getattr(pipe, "text_encoder", None) is None:
+        return
+
+    pipe.text_encoder.to(device)
+    try:
+        with torch.no_grad():
+            positive, negative = pipe.encode_prompt(
+                prompt=prompt,
+                negative_prompt=state.negative_prompt,
+                do_classifier_free_guidance=True,
+                device=device,
+                dtype=dtype,
+            )
+    finally:
+        pipe.text_encoder.to("cpu")
+
+    state.vdm_prompt_embeds = positive
+    state.vdm_negative_embeds = negative
+
+    pipe.text_encoder = None
+    if isinstance(getattr(pipe, "components", None), dict):
+        pipe.components.pop("text_encoder", None)
+    gc.collect()
+    torch.cuda.empty_cache()
+    print(f"  prompt encoded once; text encoder freed, "
+          f"{torch.cuda.memory_allocated() / 2**30:.2f} GiB resident", flush=True)
+
+
 def process_one_video(state: PipelineState, video_path: str, output_path: str) -> bool:
     """Process a single video and write the relit full video to output_path. Returns True on success."""
     total_frames, src_fps, orig_w, orig_h = get_video_metadata(video_path)
@@ -740,6 +805,9 @@ def process_one_video(state: PipelineState, video_path: str, output_path: str) -
     current_seg = -1
     seg_frames: list[np.ndarray] = []
 
+    prompt_embeds = getattr(state, "vdm_prompt_embeds", None)
+    negative_embeds = getattr(state, "vdm_negative_embeds", None)
+
     for seg_idx, chunk_start, relight_prompt, bg_source in jobs:
         if seg_idx != current_seg:
             current_seg = seg_idx
@@ -769,8 +837,10 @@ def process_one_video(state: PipelineState, video_path: str, output_path: str) -
                 relight_prompt=relight_prompt,
                 bg_source=bg_source,
                 video=video_list,
-                prompt=state.vdm_prompt,
-                negative_prompt=state.negative_prompt,
+                prompt=None if prompt_embeds is not None else state.vdm_prompt,
+                negative_prompt=None if prompt_embeds is not None else state.negative_prompt,
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=negative_embeds,
                 strength=state.strength,
                 guidance_scale=state.text_guide_scale,
                 num_inference_steps=num_inference_steps,
@@ -805,7 +875,10 @@ def process_one_video(state: PipelineState, video_path: str, output_path: str) -
     out_dir = os.path.dirname(output_path)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
-    imageio.mimwrite(output_path, full_frames, fps=src_fps)
+    # macro_block_size defaults to 16, which silently pads 480x270 out to
+    # 480x272. The augmented clip is supposed to stay frame- and pixel-aligned
+    # with the original's action labels, so write the exact size.
+    imageio.mimwrite(output_path, full_frames, fps=src_fps, macro_block_size=1)
     return True
 
 

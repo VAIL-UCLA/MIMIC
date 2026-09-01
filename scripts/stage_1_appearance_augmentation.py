@@ -102,6 +102,10 @@ def parse_args(argv=None):
     sel.add_argument("--seed", type=int, default=42)
 
     q = parser.add_argument_group("quality / speed")
+    q.add_argument("--low_gpu_memory_mode", action="store_true",
+                   help="Offload the video model between calls. The relighting "
+                        "UNet stays resident, so holding both needs more than a "
+                        "16 GB card has.")
     q.add_argument("--fast", action="store_true", help="Lower resolution and fewer steps.")
     q.add_argument("--max_side", type=int, default=None)
     q.add_argument("--strength", type=float, default=None)
@@ -182,6 +186,8 @@ def main(argv=None) -> int:
         num_step=args.num_step if args.num_step is not None else (6 if args.fast else 10),
         fg_preserve=args.fg_preserve, detail_strength=args.detail_strength,
         no_yolo=args.no_yolo,
+        low_gpu_memory_mode=args.low_gpu_memory_mode,
+        vdm_prompt=prompt_store.VDM_PROMPT,
         models_dir=Path(args.models_dir) if args.models_dir else None,
     )
     state = lav.load_pipeline(pipeline_args)

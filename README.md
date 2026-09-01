@@ -192,9 +192,12 @@ in the last panel, and both are re-expressed against the *recorded* pose —
 otherwise the two labels' differing ego frames turn a 15° heading difference
 into metres of apparent deviation across a 12 m lookahead.
 
-The middle panel is a placeholder because stage 1 has not been run against these
-clips; the script draws it rather than dropping the column, so the layout stays
-fixed and what is missing is obvious.
+The middle panel is stage 1's output for the same moment: the scene relit as an
+icy, snow-lit street while the geometry, frame count and resolution stay
+untouched, so it remains aligned with the original's action labels. Stage 1 runs
+on the whole recording and stage 2 on a window of it, so the visualizer shifts
+the relit panel by the window's offset — otherwise it would show a moment nine
+seconds from the rest of the row.
 
 This clip is parked for its first eight seconds, so stage 2 moved the render
 window onto the maneuver and wrote the bundle under `out/action/_windows/`. The
@@ -204,7 +207,8 @@ Regenerate the figure with:
 
 ```bash
 uv run python scripts/visualize_augmentation.py \
-    --input assets/clips/38aee4d8 --action_dir out/action \
+    --input assets/clips/38aee4d8 \
+    --action_dir out/action --appearance_dir out/appearance \
     --output assets/examples \
     --frames 61 --frame_stride 20 --contact_sheet --sheet_rows 4
 
