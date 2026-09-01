@@ -357,3 +357,49 @@ def test_reprojection_error_degenerate():
                                   np.eye(3), np.array([1.0, 0, 0]), K, 1.0) == float("inf")
     pa, pb, z, R, t = make_pair(np.zeros(3), np.array([0.5, 0, 0]), 2.0)
     assert cal.reprojection_error(pa, pb, z, R, t, K, float("nan")) == float("inf")
+
+
+# ---------------------------------------------------------------------------
+# Depth cache keying
+#
+# A corpus laid out one directory per clip gives every clip the same file name.
+# Keying the cache on the stem alone served the first clip's depth to all of
+# them, so each was calibrated against another clip's geometry.
+# ---------------------------------------------------------------------------
+
+
+def test_cache_path_separates_clips_with_the_same_file_name():
+    from pathlib import Path
+
+    from mimic.action_augmentation import calibrate_clips as cc
+    from mimic.action_augmentation import scales as scale_io
+
+    window = scale_io.make_window(49, 4)
+    a = cc.cache_path(Path("cache"), Path("/data/09294dbb/rgb_pinhole.mp4"), window)
+    b = cc.cache_path(Path("cache"), Path("/data/38aee4d8/rgb_pinhole.mp4"), window)
+    assert a != b
+
+
+def test_cache_path_separates_windows():
+    from pathlib import Path
+
+    from mimic.action_augmentation import calibrate_clips as cc
+    from mimic.action_augmentation import scales as scale_io
+
+    clip = Path("/data/09294dbb/rgb_pinhole.mp4")
+    a = cc.cache_path(Path("cache"), clip, scale_io.make_window(49, 1))
+    b = cc.cache_path(Path("cache"), clip, scale_io.make_window(49, 4))
+    assert a != b
+
+
+def test_cache_path_is_stable_for_the_same_clip_and_window():
+    from pathlib import Path
+
+    from mimic.action_augmentation import calibrate_clips as cc
+    from mimic.action_augmentation import scales as scale_io
+
+    clip = Path("/data/09294dbb/rgb_pinhole.mp4")
+    window = scale_io.make_window(49, 4)
+    assert cc.cache_path(Path("cache"), clip, window) == cc.cache_path(
+        Path("cache"), clip, window
+    )

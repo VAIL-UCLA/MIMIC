@@ -170,3 +170,68 @@ def test_sample_strength_takes_both_sides_over_a_corpus():
 
     signs = [np.sign(aa.sample_strength(s, strength_range=(0.3, 0.8))) for s in range(400)]
     assert 0.4 < signs.count(1.0) / len(signs) < 0.6
+
+
+# ---------------------------------------------------------------------------
+# Frame-rate discovery
+#
+# Positional sidecars carry no timestamps, so the timeline is arange(n)/fps.
+# Assuming the wrong rate rescales duration and speed together, which silently
+# mis-places and mis-sizes every maneuver rather than failing.
+# ---------------------------------------------------------------------------
+
+
+def _write_meta(folder, blob):
+    (folder / "meta.json").write_text(json.dumps(blob))
+
+
+def test_clip_fps_reads_the_per_stream_rate(tmp_path):
+    video = tmp_path / "rgb_pinhole.mp4"
+    video.write_bytes(b"")
+    _write_meta(tmp_path, {
+        "fps": 5.0,
+        "modalities": {"rgb_pinhole": {"file": "rgb_pinhole.mp4", "fps": 20.0}},
+    })
+    assert lb.clip_fps(video) == 20.0
+
+
+def test_clip_fps_falls_back_to_the_bundle_rate(tmp_path):
+    video = tmp_path / "rgb_pinhole.mp4"
+    video.write_bytes(b"")
+    _write_meta(tmp_path, {"fps": 20.0})
+    assert lb.clip_fps(video) == 20.0
+
+
+def test_clip_fps_ignores_a_stream_entry_for_another_file(tmp_path):
+    video = tmp_path / "rgb_pinhole.mp4"
+    video.write_bytes(b"")
+    _write_meta(tmp_path, {
+        "fps": 20.0,
+        "modalities": {"route": {"file": "route.mp4", "fps": 2.0}},
+    })
+    assert lb.clip_fps(video) == 20.0
+
+
+def test_clip_fps_survives_unreadable_meta(tmp_path):
+    video = tmp_path / "rgb_pinhole.mp4"
+    video.write_bytes(b"")
+    (tmp_path / "meta.json").write_text("{not json")
+    # Falls through to the container, which cannot be read either -> None.
+    assert lb.clip_fps(video) is None
+
+
+def test_clip_fps_rejects_a_nonpositive_rate(tmp_path):
+    video = tmp_path / "rgb_pinhole.mp4"
+    video.write_bytes(b"")
+    _write_meta(tmp_path, {"fps": 0})
+    assert lb.clip_fps(video) is None
+
+
+def test_shipped_clips_report_their_true_rate():
+    from pathlib import Path
+
+    clips = sorted(Path("assets/clips").glob("*/rgb_pinhole.mp4"))
+    if not clips:
+        pytest.skip("sample clips not present")
+    for clip in clips:
+        assert lb.clip_fps(clip) == 20.0

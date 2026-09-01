@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -69,9 +70,15 @@ def cache_path(cache_dir: Path, video_path: Path, window: dict) -> Path:
 
     The window is part of the name: a stack computed over a different set of
     frames was normalized differently and is not interchangeable.
+
+    So is a digest of the clip's full path. A corpus laid out one directory per
+    clip gives every clip the same file name — ``rgb_pinhole.mp4`` — and keying
+    on the stem alone would silently serve the first clip's depth to all of
+    them, calibrating each against another clip's geometry.
     """
     tag = f"{window['start']}_{window['length']}_{window['stride']}"
-    return cache_dir / f"{video_path.stem}__{tag}.npy"
+    digest = hashlib.sha1(str(video_path).encode()).hexdigest()[:8]
+    return cache_dir / f"{video_path.stem}__{digest}__{tag}.npy"
 
 
 def depth_for_clip(video_path, window, args, tc_root):
@@ -94,7 +101,8 @@ def depth_for_clip(video_path, window, args, tc_root):
         raise FileNotFoundError("DepthCrafter is needed but TrajectoryCrafter was not found")
 
     depth = estimate_depth(
-        video_path, window["length"], window["stride"], tc_root, args.device
+        video_path, window["length"], window["stride"], tc_root, args.device,
+        args.cpu_offload,
     )
     if cache is not None:
         cache.parent.mkdir(parents=True, exist_ok=True)
@@ -109,10 +117,17 @@ def calibrate_one(video_path: Path, args, tc_root) -> dict:
     window = scale_io.make_window(args.length, args.stride)
 
     sidecar = label_io.find_sidecar(video_path, Path(args.labels) if args.labels else None)
-    data = label_io.load_labels(sidecar, fps=args.fps or label_io.DEFAULT_FPS)
 
     frames, src_fps = read_frames(video_path, args.length, args.stride)
-    fps = (args.fps or (src_fps if src_fps > 0 else label_io.DEFAULT_FPS)) / args.stride
+    # One rate for both timelines. Reading the labels at one rate and the frames
+    # at another silently samples the wrong stretch of the clip: at 5 vs 20 fps
+    # the window lands on the first quarter of the recording, which for a clip
+    # that starts parked is the part with no baseline to solve from.
+    clip_rate = args.fps or label_io.clip_fps(video_path)
+    if not clip_rate:
+        clip_rate = src_fps if src_fps > 0 else label_io.DEFAULT_FPS
+    data = label_io.load_labels(sidecar, fps=clip_rate)
+    fps = clip_rate / args.stride
 
     depth, depth_source = depth_for_clip(video_path, window, args, tc_root)
 
@@ -171,6 +186,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no_affine", action="store_true",
                         help="Skip the affine-in-disparity fit.")
     parser.add_argument("--device", type=str, default="cuda:0")
+    parser.add_argument(
+        "--cpu_offload", choices=("model", "sequential"), default="model",
+        help="DepthCrafter offload strategy. 'sequential' fits a 49-frame "
+             "1024x576 window on a 16 GB card at roughly 4x the wall clock.",
+    )
     parser.add_argument("--out", type=str, default=None,
                         help="Write the full multi-clip report as JSON.")
     args = parser.parse_args(argv)
@@ -197,12 +217,19 @@ def _summarize(results: list[dict]) -> None:
     scales = [r["scale"] for r in results if np.isfinite(r.get("scale", np.nan))]
     if not scales:
         return
+    failed = len(results) - len(scales)
     stats = cal.robust_scale(np.array(scales))
     lo, hi = min(scales), max(scales)
     print("\n" + "-" * 72)
-    print(f"  {len(scales)} clip(s) calibrated.  median {stats['scale']:.4f}, "
-          f"range {lo:.4f} .. {hi:.4f}")
-    if stats["scale"] > 0:
+    print(f"  {len(scales)} of {len(results)} clip(s) calibrated.  "
+          f"median {stats['scale']:.4f}, range {lo:.4f} .. {hi:.4f}")
+    if failed:
+        print(f"  {failed} clip(s) produced no usable pairs — most often the window")
+        print("    is a stationary stretch, which carries no baseline to solve from.")
+        print("    A larger --stride widens the window in time and usually fixes it.")
+    if len(scales) < 2:
+        print("  Only one clip calibrated, so there is no spread to report.")
+    elif stats["scale"] > 0:
         spread = (hi - lo) / stats["scale"]
         print(f"  clip-to-clip spread {spread * 100:.1f}% of the median.")
         if spread > 0.15:

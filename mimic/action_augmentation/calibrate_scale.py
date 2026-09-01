@@ -162,13 +162,26 @@ def load_depth(path: Path, n_frames: int) -> np.ndarray:
     return depth[:n_frames].astype(np.float64)
 
 
-def estimate_depth(video_path: Path, n_frames: int, stride: int, tc_root: Path, device: str) -> np.ndarray:
+def estimate_depth(
+    video_path: Path,
+    n_frames: int,
+    stride: int,
+    tc_root: Path,
+    device: str,
+    cpu_offload: str = "model",
+) -> np.ndarray:
     """Run DepthCrafter through the TrajectoryCrafter submodule.
 
     Uses upstream's own reader and estimator so the depths are identical to the
     ones the renderer will see — calibrating against a different depth pipeline
     would give a consistent number for the wrong quantity.
+
+    ``cpu_offload`` is upstream's own knob ("model" or "sequential"). A 49-frame
+    window at 1024x576 needs more than a 16 GB card has free; "sequential" keeps
+    the window and the resolution intact and pays for it in wall clock, which is
+    the right trade here because both of those feed the number being measured.
     """
+    import gc
     import os
 
     import torch
@@ -177,6 +190,7 @@ def estimate_depth(video_path: Path, n_frames: int, stride: int, tc_root: Path, 
         sys.path.insert(0, str(tc_root))
     cwd = Path.cwd()
     os.chdir(tc_root)
+    estimator = None
     try:
         from models.infer import DepthCrafterDemo
         from models.utils import read_video_frames
@@ -185,7 +199,7 @@ def estimate_depth(video_path: Path, n_frames: int, stride: int, tc_root: Path, 
         estimator = DepthCrafterDemo(
             unet_path="tencent/DepthCrafter",
             pre_train_path="stabilityai/stable-video-diffusion-img2vid-xt",
-            cpu_offload="model",
+            cpu_offload=cpu_offload,
             device=device,
         )
         with torch.inference_mode():
@@ -193,6 +207,13 @@ def estimate_depth(video_path: Path, n_frames: int, stride: int, tc_root: Path, 
         return depths.squeeze(1).float().cpu().numpy().astype(np.float64)
     finally:
         os.chdir(cwd)
+        # Callers that go on to render load a second, much larger pipeline in
+        # the same process. Leaving this one resident costs ~12 GB and OOMs the
+        # renderer on a 16 GB card, so hand the memory back before returning.
+        del estimator
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 def poses_at_frame_times(data: label_io.LabelData, n_frames: int, fps: float) -> np.ndarray:
@@ -310,6 +331,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no_affine", action="store_true",
                         help="Skip the affine-in-disparity fit and report only a single scale.")
     parser.add_argument("--device", type=str, default="cuda:0")
+    parser.add_argument(
+        "--cpu_offload", choices=("model", "sequential"), default="model",
+        help="DepthCrafter offload strategy. 'sequential' fits a 49-frame "
+             "1024x576 window on a 16 GB card at roughly 4x the wall clock.",
+    )
     return parser.parse_args(argv)
 
 
@@ -378,7 +404,10 @@ def main(argv: list[str] | None = None) -> int:
             elif args.depth_dir is not None:
                 depth = load_depth(Path(args.depth_dir) / f"{path.stem}.npy", len(frames))
             else:
-                depth = estimate_depth(path, args.max_frames, args.stride, tc_root, args.device)
+                depth = estimate_depth(
+                    path, args.max_frames, args.stride, tc_root, args.device,
+                    args.cpu_offload,
+                )
 
             result = calibrate_clip(
                 path, depth, data, fps, frames,

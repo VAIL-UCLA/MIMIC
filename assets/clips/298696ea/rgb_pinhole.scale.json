@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "clip": "rgb_pinhole.mp4",
+  "scale": 2.4224501492297494,
+  "units": "depth units per meter",
+  "window": {
+    "start": 0,
+    "length": 49,
+    "stride": 4
+  },
+  "labels": "poses_recorded.npy",
+  "calibration": {
+    "n_pairs": 38,
+    "skipped": 5,
+    "n_frames": 49,
+    "mad_ratio": 0.49687729415579324,
+    "p16": 1.3057937577312446,
+    "p84": 4.924067006349731,
+    "residual_scale_only": 7.517839047188208,
+    "alpha": 0.3135484618394542,
+    "beta": 1.4067217411492874e-06,
+    "depth_p10": 3.75390625,
+    "depth_p50": 23.21875,
+    "depth_p90": 46.90625,
+    "effective_scale": 3.1890913148155318,
+    "depth_scale_spread": 0.0001214102852151333,
+    "depth_source": "cache rgb_pinhole__f1e4ab3c__0_49_4.npy",
+    "fps": 5.0
+  }
+}

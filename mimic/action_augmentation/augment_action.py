@@ -180,6 +180,173 @@ def build_c2w_poses(
     return torch.cat(poses, dim=0)
 
 
+def _patch_write_video_for_torchvision() -> None:
+    """Restore ``torchvision.io.write_video``, removed in torchvision 0.22.
+
+    Upstream saves every result with it. Newer torchvision dropped the whole
+    video-writing API, so the pipeline runs to completion and then fails on the
+    last line with an AttributeError.
+
+    The replacement writes through imageio's ffmpeg backend with upstream's own
+    codec and CRF, so the output file is what upstream intended.
+    """
+    import torchvision.io
+
+    if hasattr(torchvision.io, "write_video"):
+        return
+
+    def write_video(filename, video_array, fps, video_codec="libx264", options=None):
+        import imageio.v2 as imageio
+        import numpy as np
+
+        frames = video_array
+        if hasattr(frames, "cpu"):
+            frames = frames.cpu().numpy()
+        frames = np.asarray(frames, dtype=np.uint8)
+
+        params = ["-crf", str((options or {}).get("crf", "10"))]
+        codec = "libx264" if video_codec in ("h264", "libx264") else video_codec
+        writer = imageio.get_writer(
+            str(filename), fps=fps, codec=codec, quality=None,
+            macro_block_size=1, pixelformat="yuv420p", ffmpeg_params=params,
+        )
+        try:
+            for frame in frames:
+                writer.append_data(frame)
+        finally:
+            writer.close()
+
+    torchvision.io.write_video = write_video
+
+
+def _patch_pipeline_device_for_offload(crafter) -> None:
+    """Make ``pipeline.device`` usable while the pipeline is offloaded.
+
+    ``enable_sequential_cpu_offload`` leaves every parameter on the meta device
+    until its block is needed, so ``DiffusionPipeline.device`` — which reports
+    the device of the first module it finds — answers ``meta``. Upstream builds
+    its cross-attention reference with ``ref_latents.to(device=self.device)``,
+    which quietly moves real data onto meta and throws it away; the failure only
+    surfaces later as "Cannot copy out of meta tensor" inside accelerate.
+
+    Sequential offload is not optional here: the refinement transformer is ~10 GB
+    in bf16, so on a 16 GB card whole-model offload cannot fit the activations.
+
+    Falls back to the original property whenever it reports a real device, so
+    nothing changes for the un-offloaded path.
+    """
+    pipeline = getattr(crafter, "pipeline", None)
+    if pipeline is None:
+        return
+    cls = type(pipeline)
+    if getattr(cls, "_mimic_device_patched", False):
+        return
+
+    original = cls.device
+
+    def device(self):
+        resolved = original.fget(self)
+        if getattr(resolved, "type", None) == "meta":
+            return self._execution_device
+        return resolved
+
+    cls.device = property(device)
+    cls._mimic_device_patched = True
+
+
+def _enable_vae_memory_savers(crafter) -> None:
+    """Turn on the pipeline's own VAE slicing and tiling if it has them.
+
+    Both trade a little speed for a much smaller peak during encode and decode,
+    and neither changes the result. Decoding 49 frames in one piece asks for a
+    single ~4.7 GB block, which is the difference between finishing and not on a
+    16 GB card.
+
+    Upstream's pipeline predates the ``enable_vae_*`` convenience wrappers, so
+    the VAE's own methods are the ones that matter here; the wrappers are tried
+    first for pipelines that do have them.
+    """
+    pipeline = getattr(crafter, "pipeline", None)
+    targets = [
+        (pipeline, "enable_vae_slicing"),
+        (pipeline, "enable_vae_tiling"),
+        (getattr(pipeline, "vae", None), "enable_slicing"),
+        (getattr(pipeline, "vae", None), "enable_tiling"),
+    ]
+    for owner, method in targets:
+        function = getattr(owner, method, None)
+        if callable(function):
+            try:
+                function()
+            except Exception as exc:  # noqa: BLE001 - a saver is optional
+                print(f"note: {method} unavailable ({exc})", flush=True)
+
+
+def _release_captioner(crafter, prompt: str, refine_prompt: str) -> None:
+    """Use a fixed prompt and give the captioner's memory back.
+
+    Upstream builds BLIP-2 OPT-2.7b in ``__init__`` and pins it to the GPU with
+    a plain ``.to(device)`` — no offload — purely to describe one frame. That is
+    roughly 7.5 GB resident before DepthCrafter and the refinement model load,
+    which is the difference between fitting and not fitting on a 16 GB card.
+
+    When the caption is supplied there is nothing for it to do, so replace the
+    method with the constant and drop the weights.
+
+    The attributes are set to ``None`` rather than deleted: upstream frees them
+    itself part-way through ``infer_gradual`` with ``del self.captioner``, which
+    would raise if the name were already gone.
+    """
+    import gc
+
+    import torch
+
+    crafter.get_caption = lambda opts, image: prompt + refine_prompt
+    crafter.captioner = None
+    crafter.caption_processor = None
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def _patch_sincos_for_diffusers() -> None:
+    """Let the pinned submodule keep working on diffusers >= 0.33.
+
+    Upstream calls ``get_3d_sincos_pos_embed`` without ``output_type``, which
+    still defaults to ``"np"``. From 0.33 that path is deprecated, and by 0.40
+    diffusers raises instead of warning, so the transformer cannot be built at
+    all.
+
+    The two branches are the same computation — identical construction, both
+    returning ``[T, H*W, D]`` — so routing to the tensor branch and handing back
+    an array is exact, not an approximation. Patching the name in the submodule's
+    own namespace leaves the submodule's source untouched.
+    """
+    try:
+        from diffusers.models import embeddings as diffusers_embeddings
+    except ImportError:
+        return
+
+    try:
+        import models.crosstransformer3d as upstream
+    except ImportError:
+        return
+
+    if getattr(upstream, "_mimic_sincos_patched", False):
+        return
+
+    original = diffusers_embeddings.get_3d_sincos_pos_embed
+
+    def get_3d_sincos_pos_embed(*args, **kwargs):
+        if kwargs.get("output_type") is None:
+            kwargs["output_type"] = "pt"
+        result = original(*args, **kwargs)
+        return result.cpu().numpy() if hasattr(result, "cpu") else result
+
+    upstream.get_3d_sincos_pos_embed = get_3d_sincos_pos_embed
+    upstream._mimic_sincos_patched = True
+
+
 def make_get_poses(lateral: np.ndarray, yaw: np.ndarray, scale: float, stride: int = 1):
     """Build a ``get_poses`` replacement that injects our camera path.
 
@@ -259,8 +426,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                           help="Output sidecar. Default: matches --output's stem, .npz.")
     io_group.add_argument("--tc_root", type=str, default=None,
                           help="TrajectoryCrafter checkout. Default: the third_party submodule.")
-    io_group.add_argument("--fps", type=float, default=label_io.DEFAULT_FPS,
-                          help="Frame rate assumed when the sidecar has no timestamps.")
+    io_group.add_argument("--fps", type=float, default=None,
+                          help="Frame rate for sidecars without timestamps. "
+                               "Default: read from the clip's meta.json or container.")
     io_group.add_argument("--overwrite", action="store_true")
     io_group.add_argument("--labels_only", action="store_true",
                           help="Compute the trajectory and label, skip video synthesis (no GPU).")
@@ -308,6 +476,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     render.add_argument("--diffusion_inference_steps", type=int, default=50)
     render.add_argument("--diffusion_guidance_scale", type=float, default=6.0)
     render.add_argument("--device", type=str, default="cuda:0")
+    render.add_argument("--sample_size", type=int, nargs=2, default=(384, 672),
+                        metavar=("H", "W"),
+                        help="Refinement model's working size. Upstream's default is "
+                             "384 672; the 5B transformer leaves little room for "
+                             "activations on a 16 GB card, where 320 560 fits.")
+    render.add_argument("--prompt", type=str, default=None,
+                        help="Scene description for the refinement model. Default: "
+                             "upstream captions the clip with BLIP-2, which pins "
+                             "~7.5 GB to the GPU. Supplying one frees that, and is "
+                             "effectively required below about 24 GB.")
+    render.add_argument("--cpu_offload", type=str, default="model",
+                        choices=("model", "sequential"),
+                        help="DepthCrafter offload strategy.")
+    render.add_argument("--low_gpu_memory_mode", action="store_true",
+                        help="Upstream's low-VRAM path for the refinement "
+                             "model. Needed below roughly 24 GB; slower.")
 
     args = parser.parse_args(argv)
     given = [name for name, value in (("--strength", args.strength),
@@ -328,6 +512,10 @@ def main(argv: list[str] | None = None) -> int:
     if not input_path.is_file():
         print(f"error: input video not found: {input_path}", file=sys.stderr)
         return 1
+
+    if args.fps is None:
+        # A guessed rate rescales the whole timeline, so ask the clip first.
+        args.fps = label_io.clip_fps(input_path) or label_io.DEFAULT_FPS
 
     try:
         sidecar = label_io.find_sidecar(input_path, Path(args.labels) if args.labels else None)
@@ -459,6 +647,8 @@ def main(argv: list[str] | None = None) -> int:
 def _render(args, tc_root: Path, input_path: Path, output_path: Path,
             lateral: np.ndarray, yaw: np.ndarray, seed: int, scale: float) -> int:
     """Run TrajectoryCrafter with our camera path bound in place of its own."""
+    import gc
+
     import torch
 
     # Upstream resolves sibling modules relatively and reads/writes under cwd.
@@ -466,7 +656,10 @@ def _render(args, tc_root: Path, input_path: Path, output_path: Path,
         sys.path.insert(0, str(tc_root))
     cwd = Path.cwd()
     os.chdir(tc_root)
+    crafter = None
     try:
+        _patch_sincos_for_diffusers()
+        _patch_write_video_for_torchvision()
         from demo import TrajCrafter
 
         opts = SimpleNamespace(
@@ -488,11 +681,11 @@ def _render(args, tc_root: Path, input_path: Path, output_path: Path,
             near=0.0001,
             far=10000.0,
             anchor_idx=0,
-            low_gpu_memory_mode=False,
+            low_gpu_memory_mode=args.low_gpu_memory_mode,
             model_name="alibaba-pai/CogVideoX-Fun-V1.1-5b-InP",
             transformer_path="TrajectoryCrafter/TrajectoryCrafter",
             sampler_name="DDIM_Origin",
-            sample_size=[384, 672],
+            sample_size=list(args.sample_size),
             diffusion_guidance_scale=args.diffusion_guidance_scale,
             diffusion_inference_steps=args.diffusion_inference_steps,
             prompt=None,
@@ -508,7 +701,7 @@ def _render(args, tc_root: Path, input_path: Path, output_path: Path,
             blip_path="Salesforce/blip2-opt-2.7b",
             unet_path="tencent/DepthCrafter",
             pre_train_path="stabilityai/stable-video-diffusion-img2vid-xt",
-            cpu_offload="model",
+            cpu_offload=args.cpu_offload,
             depth_inference_steps=5,
             depth_guidance_scale=1.0,
             window_size=110,
@@ -523,9 +716,20 @@ def _render(args, tc_root: Path, input_path: Path, output_path: Path,
         crafter.get_poses = make_get_poses(
             lateral, yaw, scale, args.stride
         ).__get__(crafter)
+        if args.prompt:
+            _release_captioner(crafter, args.prompt, opts.refine_prompt)
+        _enable_vae_memory_savers(crafter)
+        if args.low_gpu_memory_mode:
+            _patch_pipeline_device_for_offload(crafter)
         crafter.infer_gradual(opts)
     finally:
         os.chdir(cwd)
+        # A corpus run renders clip after clip in one process. Each TrajCrafter
+        # holds DepthCrafter, the refinement model and (unless --prompt) BLIP-2,
+        # so keeping one alive costs the next clip its memory.
+        del crafter
+        gc.collect()
+        torch.cuda.empty_cache()
 
     print(f"Rendered into {output_path.parent / output_path.stem}")
     return 0

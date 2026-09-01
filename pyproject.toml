@@ -28,8 +28,14 @@ viz = [
 action = [
     "torch",
     "torchvision",
-    "diffusers>=0.30.1",
-    "transformers",
+    # Upper bounds are load-bearing, not caution. diffusers >= 0.40 requires
+    # huggingface-hub >= 1.0 while transformers < 5 requires < 1.0, so the two
+    # cannot both float. transformers 5.x also reads the refinement model's
+    # SentencePiece tokenizer with the wrong loader. Upstream pins
+    # transformers==4.47; Light-A-Video pins 4.48 and needs diffusers >= 0.33
+    # for the Wan backbone, so this window is the overlap that serves both.
+    "diffusers>=0.33,<0.40",
+    "transformers>=4.47,<5",
     "accelerate",
     "safetensors",
     "einops",
@@ -41,6 +47,10 @@ action = [
     "decord",
     "kornia",
     "sentencepiece",
+    # transformers converts the refinement model's SentencePiece tokenizer
+    # through protobuf; without it the tokenizer cannot be built.
+    "protobuf",
+    "huggingface-hub<1.0",
     "ftfy",
 ]
 # Runtime for mimic.appearance_augmentation (Light-A-Video). Needs a CUDA GPU.
@@ -49,8 +59,11 @@ action = [
 appearance = [
     "torch",
     "torchvision",
-    "diffusers>=0.33",
-    "transformers",
+    # AutoencoderKLWan (the Wan2.1 backbone) needs diffusers >= 0.33, and the
+    # same huggingface-hub coupling as the action extra caps it below 0.40.
+    "diffusers>=0.33,<0.40",
+    "transformers>=4.48,<5",
+    "huggingface-hub<1.0",
     "accelerate",
     "safetensors",
     "peft",

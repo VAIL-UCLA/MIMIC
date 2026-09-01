@@ -170,12 +170,34 @@ uv run python -m mimic.action_augmentation.calibrate_clips --input clip.mp4
 
 # a corpus, caching depth so a re-run costs no GPU time
 uv run python -m mimic.action_augmentation.calibrate_clips \
-    --input 'assets/clips/*/rgb_pinhole.mp4' --fps 20
+    --input 'assets/clips/*/rgb_pinhole.mp4'
 
 # reuse depth stacks computed elsewhere — no GPU at all
 uv run python -m mimic.action_augmentation.calibrate_clips \
     --input 'clips/*.mp4' --depth_cache depths/ --no_recompute
 ```
+
+The frame rate is read from the clip's `meta.json`, falling back to the
+container. Pass `--fps` only for a clip that carries neither: the rate sets the
+whole label timeline, so a wrong one rescales duration and speed together and
+silently mis-places every maneuver instead of failing.
+
+On a card with less than about 24 GB, add `--cpu_offload sequential`. A
+49-frame window at 1024x576 does not fit otherwise, and the window and the
+resolution are both inputs to the number being measured, so they are the wrong
+things to shrink.
+
+Two failure modes are worth recognizing in the output:
+
+| Symptom | Cause |
+|---|---|
+| `nan`, `0 pairs` | The window is a stationary stretch. No baseline, nothing to solve. Move the window (see below) rather than widening it. |
+| high `MAD`, few pairs | Sparse or poorly tracked features. Usable, but treat the scale as approximate. |
+
+Widening the window with a larger `--stride` is tempting and mostly wrong: past
+roughly 5 effective fps the frame-to-frame motion defeats feature tracking, and
+calibration degrades from noisy to meaningless. On the sample clips, stride 6
+drops two of three clips to zero pairs and pushes the third to 98% MAD.
 
 `augment_action` then reads each clip's sidecar automatically (`--scale auto` is
 the default), so the number never has to be carried by hand:
@@ -192,6 +214,60 @@ the default), so the number never has to be carried by hand:
 The stored `window` is the leading 49 frames the renderer actually consumes.
 Rendering a different window means the depth was normalized differently, so the
 scale no longer applies — a mismatch is reported rather than silently used.
+
+### Running on a 16 GB card
+
+The refinement transformer is about 10 GB in bf16, so whole-model offload
+leaves nothing for activations. Four flags make the pipeline fit, and each one
+addresses a different peak:
+
+```bash
+uv run python scripts/stage_2_action_augmentation.py \
+    --input 'assets/clips/*' --stride 4 \
+    --cpu_offload sequential \
+    --low_gpu_memory_mode \
+    --prompt "a robot driving along an urban sidewalk at night"
+```
+
+| Flag | What it saves | Why it is needed |
+|---|---|---|
+| `--cpu_offload sequential` | DepthCrafter's peak | A 49-frame window at 1024x576 does not fit alongside anything else. |
+| `--low_gpu_memory_mode` | ~10 GB | Offloads the refinement transformer block by block instead of whole. |
+| `--prompt` | ~7.5 GB | Upstream pins BLIP-2 OPT-2.7b to the GPU to caption one frame. Supplying the caption skips it. |
+| (automatic) | ~4.7 GB | VAE slicing and tiling; decoding 49 frames in one piece asks for a single 4.7 GB block. |
+
+`--sample_size` is available if it still does not fit, but lowering it lowers
+the output resolution — try the flags above first.
+
+Two upstream incompatibilities are patched from MIMIC rather than by editing
+the pinned submodule, both in `augment_action`:
+
+- `torchvision.io.write_video` was removed in torchvision 0.22. Upstream saves
+  every result with it, so the pipeline runs to completion and then fails on
+  the last line. Replaced with an imageio writer using upstream's codec and CRF.
+- `enable_sequential_cpu_offload` leaves parameters on the meta device, so
+  `pipeline.device` reports `meta`. Upstream's `ref_latents.to(device=self.device)`
+  then moves real data onto meta and discards it, surfacing much later as
+  "Cannot copy out of meta tensor". The property falls back to the execution
+  device only when it would otherwise answer `meta`.
+
+### Maneuvers later in the clip
+
+The renderer only ever reads the *leading* `49 * stride` frames. Real footage
+does not cooperate with that: two of the three sample clips idle at a crossing
+for their first eight seconds, so their only usable maneuver falls outside the
+window entirely, and no `--start_time` can reach it.
+
+Since the window cannot be widened without destroying calibration, the clip is
+moved instead. `mimic.action_augmentation.windows.materialize` writes the frames
+the window covers as a small self-contained bundle — video, poses re-based to
+zero, and a `meta.json` with the true frame rate — and the pipeline runs on
+that. The bundle is an ordinary clip folder, so sidecar discovery, frame-rate
+discovery and calibration all work on it unchanged.
+
+Stage 2 does this automatically when a planned maneuver does not fit, writing
+bundles under `<output>/_windows/<clip>/`. Pass `--no_auto_window` to turn it
+off and accept that such maneuvers are simply not rendered.
 
 `calibrate_scale` is the older single-number driver. It is still useful for
 asking "how much do my clips agree?" across a corpus, but a corpus-wide number

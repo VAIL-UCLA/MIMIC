@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -62,6 +63,7 @@ from mimic.action_augmentation import augment_action as aa
 from mimic.action_augmentation import labels as label_io
 from mimic.action_augmentation import scales as scale_io
 from mimic.action_augmentation import trajectory as tj
+from mimic.action_augmentation import windows as win
 
 STAGE = "Stage 2"
 TITLE = "Action augmentation"
@@ -70,6 +72,21 @@ TITLE = "Action augmentation"
 def variant_name(video: Path, index: int, variants: int) -> str:
     stem = video.parent.name if video.stem.startswith("rgb_") else video.stem
     return f"{stem}_act.mp4" if variants == 1 else f"{stem}_act{index}.mp4"
+
+
+#: Upstream writes the refined clip under this name inside its output folder.
+RENDER_NAME = "gen.mp4"
+
+
+def render_output(target: Path) -> Path:
+    """Where the rendered clip for ``target`` actually lands.
+
+    ``--output x_act.mp4`` does not produce that file: upstream treats the stem
+    as a folder and writes ``x_act/gen.mp4`` alongside its intermediates. The
+    "already done" check has to look at what is really written, or every clip
+    re-renders and then fails because its labels are already there.
+    """
+    return target.parent / target.stem / RENDER_NAME
 
 
 def _last_error(output: str, code: int) -> str:
@@ -118,14 +135,25 @@ def ensure_scale(video: Path, args, bar) -> tuple[float | None, str]:
 
     say(bar, f"    calibrating depth scale for {clip_label(video)} ...")
     argv = ["--input", str(video), "--length", str(aa.TC_VIDEO_LENGTH),
-            "--stride", str(args.stride), "--device", args.device]
+            "--stride", str(args.stride), "--device", args.device,
+            "--cpu_offload", args.cpu_offload]
     if args.fps:
         argv += ["--fps", str(args.fps)]
-    buffer = io.StringIO()
-    with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
-        code = cc.main(argv)
+    if args.in_process:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
+            code = cc.main(argv)
+        output = buffer.getvalue()
+    else:
+        # Same reason as the render: a CUDA context left in this process is
+        # memory the renderer's subprocess does not get.
+        completed = subprocess.run(
+            [sys.executable, "-m", "mimic.action_augmentation.calibrate_clips", *argv],
+            cwd=str(REPO_ROOT), capture_output=True, text=True, check=False,
+        )
+        code, output = completed.returncode, completed.stdout + completed.stderr
     if code != 0:
-        tail = buffer.getvalue().strip().splitlines()
+        tail = output.strip().splitlines()
         return None, f"calibration failed: {tail[-1] if tail else 'unknown error'}"
     return scale_io.resolve_scale(video, args.scale, window=window)
 
@@ -147,6 +175,14 @@ def parse_args(argv=None):
     io_group.add_argument("--labels_only", action="store_true",
                           help="Trajectories and labels only, no video synthesis (no GPU).")
     io_group.add_argument("--overwrite", action="store_true")
+    io_group.add_argument("--oom_retries", type=int, default=1,
+                          help="Retries when a clip fails with CUDA out-of-memory. "
+                               "The peak sits close to a 16 GB card's capacity, so "
+                               "whether it fits depends on what else is resident.")
+    io_group.add_argument("--in_process", action="store_true",
+                          help="Render inside this interpreter instead of one "
+                               "subprocess per clip. Easier to debug, but one "
+                               "clip's leftover GPU memory can fail the next.")
     io_group.add_argument("--dry_run", action="store_true",
                           help="Print the plan; write nothing, load nothing.")
     io_group.add_argument("--manifest", default=None,
@@ -174,6 +210,10 @@ def parse_args(argv=None):
                           "deviation from a parked robot teaches nothing.")
     man.add_argument("--min_speed", type=float, default=tj.DEFAULT_MIN_SPEED_MPS,
                      help="Speed above which the robot counts as moving.")
+    man.add_argument("--no_auto_window", action="store_true",
+                     help="Do not move the render window onto the maneuver. The "
+                          "renderer only reads the leading frames, so a maneuver "
+                          "later in the clip is simply not rendered.")
     man.add_argument("--min_moving", type=float, default=0.6,
                      help="Refuse a clip whose best window is less moving than this.")
     man.add_argument("--profile", default="raised_cosine", choices=tj.PROFILES)
@@ -191,6 +231,17 @@ def parse_args(argv=None):
     render.add_argument("--diffusion_inference_steps", type=int, default=50)
     render.add_argument("--tc_root", default=None)
     render.add_argument("--device", default="cuda:0")
+    render.add_argument("--cpu_offload", default="model",
+                        choices=("model", "sequential"),
+                        help="DepthCrafter offload strategy.")
+    render.add_argument("--prompt", default=None,
+                        help="Scene description for the refinement model, shared by "
+                             "every clip. Default: upstream captions each clip with "
+                             "BLIP-2, which pins ~7.5 GB to the GPU. Supplying one "
+                             "frees that, and is effectively required below ~24 GB.")
+    render.add_argument("--low_gpu_memory_mode", action="store_true",
+                        help="Upstream's low-VRAM path for the refinement "
+                             "model. Needed below roughly 24 GB; slower.")
 
     args = parser.parse_args(argv)
     given = [n for n, v in (("--strength", args.strength),
@@ -210,7 +261,8 @@ def maneuver_window(video: Path, args) -> tuple[float, float, float]:
     ``--strength_scale`` sizes the offset against.
     """
     sidecar = label_io.find_sidecar(video)
-    data = label_io.load_labels(sidecar, fps=args.fps or label_io.DEFAULT_FPS)
+    fps = args.fps or label_io.clip_fps(video) or label_io.DEFAULT_FPS
+    data = label_io.load_labels(sidecar, fps=fps)
     speeds = tj.path_speed(data.poses, data.times)
 
     if args.start_time is not None:
@@ -225,6 +277,81 @@ def maneuver_window(video: Path, args) -> tuple[float, float, float]:
 
     speed = float(speeds[mask].max()) if mask.any() else float(speeds.max(initial=0.0))
     return start, usable, speed
+
+
+def run_augment(argv: list[str], args) -> tuple[int, str]:
+    """Render one clip, by default in a subprocess.
+
+    Rendering in-process leaves each clip at the mercy of what the previous one
+    left on the card: the same clip succeeds or OOMs depending on its position
+    in the run, because freeing a pipeline does not always return every block to
+    the allocator. A subprocess gives each clip the whole GPU in a known state,
+    and costs one model load per clip.
+
+    ``--in_process`` restores the old behaviour for debugging, where a traceback
+    in the same interpreter is easier to work with.
+    """
+    if args.in_process:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
+            code = aa.main(argv)
+        return code, buffer.getvalue()
+
+    command = [sys.executable, "-m", "mimic.action_augmentation.augment_action", *argv]
+    for attempt in range(args.oom_retries + 1):
+        completed = subprocess.run(
+            command, cwd=str(REPO_ROOT), capture_output=True, text=True, check=False,
+        )
+        output = completed.stdout + completed.stderr
+        if completed.returncode == 0 or "OutOfMemoryError" not in output:
+            return completed.returncode, output
+        if attempt < args.oom_retries:
+            # The peak lands within a few hundred MB of the card's capacity, so
+            # whether it fits depends on what else is on the GPU right now — a
+            # desktop compositor is enough to decide it. Retrying costs a model
+            # load and usually finds the memory.
+            _free_gpu()
+    return completed.returncode, output
+
+
+def _free_gpu() -> None:
+    """Best-effort wait for another process to hand memory back."""
+    time.sleep(15)
+
+
+def window_start(video: Path, start_time: float, args) -> int:
+    """First source frame of the window the renderer should see, 0 when unmoved.
+
+    The renderer only reads the leading frames, so a maneuver later in the clip
+    is invisible to it unless the window is moved onto it.
+    """
+    if args.no_auto_window:
+        return 0
+    fps = args.fps or label_io.clip_fps(video) or label_io.DEFAULT_FPS
+    data = label_io.load_labels(label_io.find_sidecar(video), fps=fps)
+    return win.window_start_for(
+        start_time, args.horizon, fps, aa.TC_VIDEO_LENGTH, args.stride, len(data.poses)
+    )
+
+
+def prepare_clip(job, args, bar) -> tuple[Path, float]:
+    """The clip the renderer should be pointed at, and the maneuver time in it.
+
+    Returns the clip unchanged when the maneuver already sits in the leading
+    window; otherwise materializes that stretch as its own bundle so it does.
+    """
+    offset = job.get("window_start", 0)
+    if not offset:
+        return job["clip"], job["start_time"]
+
+    fps = args.fps or label_io.clip_fps(job["clip"]) or label_io.DEFAULT_FPS
+    dest = (Path(args.output).expanduser().resolve()
+            / "_windows" / job["clip"].parent.name)
+    say(bar, f"    windowing {clip_label(job['clip'])} from frame {offset} ...")
+    video = win.materialize(
+        job["clip"], dest, offset, aa.TC_VIDEO_LENGTH, args.stride, fps=fps
+    )
+    return video, max(0.0, job["start_time"] - offset / fps)
 
 
 def build_argv(video: Path, target: Path, seed: int, scale, start_time: float,
@@ -260,6 +387,12 @@ def build_argv(video: Path, target: Path, seed: int, scale, start_time: float,
         argv += ["--scale", str(scale)]
     if args.tc_root:
         argv += ["--tc_root", args.tc_root]
+    if args.cpu_offload:
+        argv += ["--cpu_offload", args.cpu_offload]
+    if args.prompt:
+        argv += ["--prompt", args.prompt]
+    if args.low_gpu_memory_mode:
+        argv.append("--low_gpu_memory_mode")
     return argv
 
 
@@ -302,6 +435,7 @@ def main(argv=None) -> int:
             jobs.append({"clip": clip, "index": index, "seed": seed,
                          "clip_seed": clip_seed, "strength": strength,
                          "start_time": start, "moving": moving, "speed": speed,
+                         "window_start": window_start(clip, start, args),
                          "yaw_deg": np.degrees(tj.peak_yaw(strength, args.horizon, speed)),
                          "target": out_dir / variant_name(clip, index, args.variants)})
 
@@ -359,16 +493,33 @@ def main(argv=None) -> int:
                   "mode": args.mode}
 
         label_target = target.with_suffix(".npz")
-        done = label_target.exists() and (args.labels_only or target.exists())
+        done = label_target.exists() and (
+            args.labels_only or render_output(target).exists()
+        )
         if done and not args.overwrite:
             record["status"] = "skipped"
             records.append(record)
             say(bar, f"  - {target.stem}  exists, skipped")
             continue
 
+        # The renderer reads the leading frames only, so bring the maneuver
+        # there first: calibration and rendering must both see that window.
+        render_clip, render_start = clip, job["start_time"]
+        if not args.labels_only:
+            try:
+                render_clip, render_start = prepare_clip(job, args, bar)
+            except (OSError, ValueError) as exc:
+                record["status"] = "failed"
+                record["error"] = f"windowing failed: {exc}"
+                say(bar, f"  ✗ {target.stem}  {record['error']}")
+                records.append(record)
+                continue
+            if render_clip != clip:
+                record["window_start"] = job["window_start"]
+
         scale = None
         if not args.labels_only:
-            scale, provenance = ensure_scale(clip, args, bar)
+            scale, provenance = ensure_scale(render_clip, args, bar)
             if scale is None:
                 record["status"] = "failed"
                 record["error"] = provenance
@@ -380,14 +531,13 @@ def main(argv=None) -> int:
 
         with step(bar, f"Generating {name} · {describe(job, args)}"):
             item_started = time.perf_counter()
-            buffer = io.StringIO()
+            argv = build_argv(render_clip, target, job["seed"], scale,
+                              render_start, job["strength"], args)
             try:
-                with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
-                    code = aa.main(build_argv(clip, target, job["seed"], scale,
-                                              job["start_time"], job["strength"], args))
+                code, output = run_augment(argv, args)
                 record["status"] = "written" if code == 0 else "failed"
                 if code != 0:
-                    record["error"] = _last_error(buffer.getvalue(), code)
+                    record["error"] = _last_error(output, code)
             except Exception as exc:  # noqa: BLE001 - one bad clip must not sink the corpus
                 record["status"] = "failed"
                 record["error"] = f"{type(exc).__name__}: {exc}"

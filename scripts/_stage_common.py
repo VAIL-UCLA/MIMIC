@@ -31,21 +31,40 @@ def find_clips(pattern: str, stream: str = DEFAULT_STREAM) -> list[Path]:
     """
     import glob as globlib
 
+    def resolve_one(path: Path) -> list[Path]:
+        if path.is_file():
+            # A glob can name any file; only videos are clips. A directly
+            # requested file is taken as given, suffix or not.
+            return [path.resolve()]
+        if path.is_dir():
+            nested = sorted(path.glob(f"*/{stream}"))
+            if nested:
+                return [p.resolve() for p in nested]
+            direct = path / stream
+            if direct.is_file():
+                return [direct.resolve()]
+            flat = sorted(
+                p for p in path.iterdir()
+                if p.is_file() and p.suffix.lower() in VIDEO_SUFFIXES
+            )
+            return [p.resolve() for p in flat]
+        return []
+
     path = Path(pattern).expanduser()
 
-    if path.is_file():
-        return [path.resolve()]
+    if path.is_file() or path.is_dir():
+        return resolve_one(path)
 
-    if path.is_dir():
-        nested = sorted(path.glob(f"*/{stream}"))
-        if nested:
-            return [p.resolve() for p in nested]
-        flat = sorted(
-            p for p in path.iterdir() if p.is_file() and p.suffix.lower() in VIDEO_SUFFIXES
-        )
-        return [p.resolve() for p in flat]
-
-    return [Path(p).resolve() for p in sorted(globlib.glob(str(path))) if Path(p).is_file()]
+    # Glob. Directories among the matches are clip folders, so resolve them the
+    # same way; plain files are kept only when they are videos, or the pattern
+    # would sweep up a README sitting beside the clips.
+    found: list[Path] = []
+    for match in sorted(globlib.glob(str(path))):
+        m = Path(match)
+        if m.is_file() and m.suffix.lower() not in VIDEO_SUFFIXES:
+            continue
+        found.extend(resolve_one(m))
+    return list(dict.fromkeys(found))
 
 
 def clip_label(video: Path) -> str:

@@ -48,8 +48,59 @@ SIDECAR_NAMES = (
     "labels.json",
 )
 
-#: Frame rate assumed when a sidecar carries no timestamps.
+#: Frame rate assumed when a sidecar carries no timestamps and the clip itself
+#: does not say. Only a last resort: a wrong rate rescales the whole label
+#: timeline, which silently mis-places and mis-sizes every maneuver.
 DEFAULT_FPS = 5.0
+
+#: Sidecar describing a clip bundle, as shipped in ``assets/clips/<uid>/``.
+META_NAME = "meta.json"
+
+
+def clip_fps(video_path) -> float | None:
+    """The clip's true frame rate, or ``None`` if it cannot be determined.
+
+    Positional label files carry no timestamps, so the timeline is rebuilt as
+    ``arange(n) / fps``. Guessing that rate is not a small error: at 5 fps an
+    18.6 s clip reads as 75 s and its top speed as a quarter of the truth, so
+    speed-relative maneuvers come out four times too small and land past the
+    end of the video.
+
+    Prefers the bundle's ``meta.json`` over the container, since a remuxed clip
+    can carry a container rate that no longer matches the recorded poses.
+    """
+    video_path = Path(video_path)
+
+    meta = video_path.parent / META_NAME
+    if meta.is_file():
+        try:
+            blob = json.loads(meta.read_text())
+        except (OSError, ValueError):
+            blob = None
+        if isinstance(blob, dict):
+            per_stream = blob.get("modalities", {})
+            if isinstance(per_stream, dict):
+                for entry in per_stream.values():
+                    if (
+                        isinstance(entry, dict)
+                        and entry.get("file") == video_path.name
+                        and isinstance(entry.get("fps"), (int, float))
+                        and entry["fps"] > 0
+                    ):
+                        return float(entry["fps"])
+            if isinstance(blob.get("fps"), (int, float)) and blob["fps"] > 0:
+                return float(blob["fps"])
+
+    try:
+        import cv2
+    except ImportError:
+        return None
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        rate = cap.get(cv2.CAP_PROP_FPS)
+    finally:
+        cap.release()
+    return float(rate) if rate and rate > 0 else None
 
 
 class LabelData:

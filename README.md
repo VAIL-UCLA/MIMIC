@@ -174,23 +174,39 @@ as a PNG.
 
 ![Augmentation comparison](assets/examples/augmentation_compare.png)
 
-Three moments from `assets/clips/38aee4d8`, spanning one 4 s maneuver: it leaves
-the recorded path, reaches 0.93 m off course at the halfway point, and rejoins.
-The augmented track (orange) is drawn over the recorded one (green) in the last
-panel, and both are re-expressed against the *recorded* pose — otherwise the two
-labels' differing ego frames turn a 15° heading difference into metres of
-apparent deviation across a 12 m lookahead.
+Four moments from `assets/clips/38aee4d8`, one second apart, spanning a single
+4 s maneuver. The offset follows the raised cosine exactly:
 
-The two middle panels are placeholders here because neither GPU stage has been
-run against these clips yet; the script draws them rather than dropping the
-column, so the layout stays fixed and what is missing is obvious. Regenerate the
-figure with:
+| t | off course |
+|---|---|
+| 0.00 s | +0.00 m |
+| 1.00 s | +0.46 m |
+| 2.00 s | **+0.93 m** (peak) |
+| 3.00 s | +0.46 m |
+
+Half the peak at both quarter points is what the profile requires, and the
+fourth panel is real TrajectoryCrafter output — the viewpoint has genuinely
+moved left, so the wall is closer at the halfway point than it ever is in the
+recording. The augmented track (orange) is drawn over the recorded one (green)
+in the last panel, and both are re-expressed against the *recorded* pose —
+otherwise the two labels' differing ego frames turn a 15° heading difference
+into metres of apparent deviation across a 12 m lookahead.
+
+The middle panel is a placeholder because stage 1 has not been run against these
+clips; the script draws it rather than dropping the column, so the layout stays
+fixed and what is missing is obvious.
+
+This clip is parked for its first eight seconds, so stage 2 moved the render
+window onto the maneuver and wrote the bundle under `out/action/_windows/`. The
+visualizer follows the label's recorded `source_video`, which is why the frame
+numbers below run 0..192 rather than starting at 178 in the original recording.
+Regenerate the figure with:
 
 ```bash
 uv run python scripts/visualize_augmentation.py \
-    --input assets/clips/38aee4d8/rgb_pinhole.mp4 --action_dir out/action \
-    --output assets/examples --fps 20 \
-    --start_frame 178 --frames 81 --frame_stride 20 --contact_sheet --sheet_rows 3
+    --input assets/clips/38aee4d8 --action_dir out/action \
+    --output assets/examples \
+    --frames 61 --frame_stride 20 --contact_sheet --sheet_rows 4
 
 mv assets/examples/38aee4d8_compare.png assets/examples/augmentation_compare.png
 ```

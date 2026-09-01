@@ -22,6 +22,7 @@ Only needs opencv and numpy; no GPU, no models.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 import time
@@ -234,6 +235,10 @@ def write_video(path: Path, frames: list[np.ndarray], fps: float) -> None:
         raise RuntimeError(f"ffmpeg failed writing {path}")
 
 
+#: Upstream writes the refined clip under this name inside its output folder.
+RENDER_NAME = "gen.mp4"
+
+
 def matching_output(
     directory: Path | None, clip: Path, suffix: str, ext: str = ".mp4"
 ) -> Path | None:
@@ -249,20 +254,62 @@ def matching_output(
     exact = directory / f"{stem}{suffix}{ext}"
     if exact.is_file():
         return exact
+
+    # A rendered clip is not a file at that path: upstream treats the stem as a
+    # folder and writes gen.mp4 inside it, next to its intermediates.
+    if ext == ".mp4":
+        for folder in [directory / f"{stem}{suffix}",
+                       *sorted(directory.glob(f"{stem}{suffix}*"))]:
+            candidate = folder / RENDER_NAME
+            if candidate.is_file():
+                return candidate
+
     matches = sorted(directory.glob(f"{stem}{suffix}*{ext}"))
     return matches[0] if matches else None
+
+
+def labelled_source(label_path: Path | None, clip: Path) -> Path:
+    """The clip an augmented label actually describes.
+
+    Stage 2 brings a maneuver into the renderer's window by materializing that
+    stretch as its own bundle, so the label covers the window and not the whole
+    recording. Comparing it against the full clip would line frame 0 of one up
+    with frame 0 of the other, which are seconds apart — and index off the end.
+    The label records the video it was made from, so follow it.
+    """
+    if label_path is None:
+        return clip
+    try:
+        with np.load(label_path, allow_pickle=True) as data:
+            if "metadata" not in data:
+                return clip
+            meta = json.loads(str(data["metadata"]))
+    except (OSError, ValueError, KeyError):
+        return clip
+    source = meta.get("source_video")
+    if not source:
+        return clip
+    candidate = Path(source)
+    return candidate if candidate.is_file() else clip
 
 
 def visualize_clip(clip: Path, args) -> dict:
     name = clip_label(clip)
     record = {"clip": name}
 
-    frames = read_all_frames(clip)
+    label_path = matching_output(
+        Path(args.action_dir) if args.action_dir else None, clip, "_act", ".npz"
+    )
+    source = labelled_source(label_path, clip)
+    if source != clip:
+        record["windowed_source"] = str(source)
+
+    frames = read_all_frames(source)
     if not frames:
         raise ValueError("no frames decoded")
 
-    sidecar = label_io.find_sidecar(clip)
-    fps = args.fps or label_io.DEFAULT_FPS
+    sidecar = label_io.find_sidecar(source)
+    fps = args.fps or label_io.clip_fps(source) or label_io.DEFAULT_FPS
     original = label_io.load_labels(sidecar, fps=fps)
 
     appearance_path = matching_output(
@@ -279,9 +326,7 @@ def visualize_clip(clip: Path, args) -> dict:
     appearance_frames = read_all_frames(appearance_path) if appearance_path else []
     action_frames = read_all_frames(action_path) if action_path else []
 
-    augmented, label_path = None, matching_output(
-        Path(args.action_dir) if args.action_dir else None, clip, "_act", ".npz"
-    )
+    augmented = None
     if label_path is not None:
         augmented = label_io.load_labels(label_path, fps=fps)
     record["augmented_labels"] = str(label_path) if label_path else None
