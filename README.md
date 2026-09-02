@@ -8,6 +8,43 @@ Official implementation of **"Learning Sidewalk Autopilot from Multi-Scale Imita
 
 MIMIC is a **goal-free, long-context** sidewalk navigation policy: it takes a short history of RGB frames and predicts a local trajectory for autonomous sidewalk driving.
 
+## Release Plan
+
+**Released**
+
+- [x] **Pretrained policy** — the goal-free, long-context MIMIC policy exported to
+      ONNX behind a unified inference wrapper, on the
+      [model zoo](https://huggingface.co/UCLA-VAIL/Navigation-Model-Zoo-Public).
+- [x] **Corrective behavior expansion — appearance stage**
+      ([`mimic/appearance_augmentation`](mimic/appearance_augmentation)): relighting
+      with a 171-prompt pool, person preservation, and resolution / fps / frame-count
+      preservation so augmented clips stay label-aligned.
+- [x] **Corrective behavior expansion — action stage**
+      ([`mimic/action_augmentation`](mimic/action_augmentation)): metric
+      deviate-and-recover maneuvers, derived-heading trajectory math, per-clip depth
+      scale calibration, and matching action labels.
+- [x] **Corpus drivers and inspection tooling** ([`scripts/`](scripts)): both stages
+      across a directory of clips with resume and a JSON manifest, plus the five-panel
+      comparison visualizer.
+- [x] **Sample clips** ([`assets/clips`](assets/clips)): three ~19 s anonymized
+      sidewalk clips at 480 × 270 / 20 fps with rectified pinhole and raw fisheye RGB,
+      metric poses, semantic masks, a route render and camera intrinsics.
+- [x] **Tests** ([`tests/`](tests)) for the trajectory, calibration, windowing and
+      label-I/O math — all GPU-free.
+
+**Planned**
+
+- [ ] **Training code and recipes** for the policy itself, and PyTorch checkpoints
+      alongside the ONNX export.
+- [ ] **Training corpus** — the augmented sidewalk dataset the released policy was
+      trained on, beyond the three sample clips.
+- [ ] **Open-loop evaluation** — the benchmark and metrics used in the paper, so
+      reported numbers can be reproduced.
+- [ ] **Closed-loop evaluation** in [URBAN-SIM](https://github.com/metadriverse/urban-sim).
+- [ ] **Deployment path** — TensorRT export and the ROS node used on the robot.
+- [ ] **Extra modalities for the sample clips** — depth, surface normals and optical
+      flow, already flagged `"planned": true` in each clip's `meta.json`.
+
 ## Installation
 
 This repository is managed with [uv](https://docs.astral.sh/uv/). Install uv, then:
@@ -350,6 +387,60 @@ and exact regardless — the scale affects only the rendered video.)
 The trajectory and calibration math is pure numpy and covered by `tests/`; see
 [`mimic/action_augmentation/README.md`](mimic/action_augmentation/README.md) for
 the label schema, the two modes and the `--scale` calibration.
+
+## Related Work
+
+MIMIC sits at the meeting point of three lines of work: navigation policies
+learned at sidewalk scale, the long-standing covariate-shift problem in imitation
+learning, and recent generative video models that make synthesizing off-policy
+experience practical. The two systems MIMIC is built on are credited under
+[Acknowledgements](#acknowledgements); the rest is context.
+
+**Sidewalk and urban navigation**
+
+| Work | Relation |
+|---|---|
+| [URBAN-SIM](https://github.com/metadriverse/urban-sim) | Scalable urban environment generation and robot learning — the closed-loop counterpart to the policy released here. |
+| [MetaUrban](https://github.com/metadriverse/metaurban) (ICLR 2025) | Embodied AI simulation for urban micromobility; the simulation-side answer to the same data problem MIMIC attacks from recorded footage. |
+| [CityWalker](https://github.com/ai4ce/CityWalker) (CVPR 2025) | Learns urban navigation from large volumes of city-walking video. Shares the "learn from passive footage" premise; does not manufacture corrective behavior. |
+| [X-MOBILITY](https://github.com/NVlabs/X-MOBILITY) (ICRA 2025) | End-to-end navigation through learned world modeling, with a TensorRT deployment path. |
+
+**General visual navigation policies**
+
+| Work | Relation |
+|---|---|
+| [GNM](https://github.com/robodhruv/visualnav-transformer) (ICRA 2023), [ViNT](https://github.com/robodhruv/visualnav-transformer) (CoRL 2023), [NoMaD](https://github.com/robodhruv/visualnav-transformer) (ICRA 2024) | Cross-embodiment navigation backbones. NoMaD's goal-masked diffusion is the closest published relative to MIMIC's goal-free mode; MIMIC differs in being long-context (16 frames) and specialized to sidewalks. |
+
+**Covariate shift and corrective data** — the problem action augmentation attacks
+
+| Work | Relation |
+|---|---|
+| ALVINN (Pomerleau, NeurIPS 1988) | The original end-to-end driving network, and the original use of *synthesized off-center views* as corrective training data. |
+| DAgger (Ross, Gordon & Bagnell, AISTATS 2011) | The canonical fix for compounding error — but it needs an interactive expert to label states the policy visits, which recorded fleet footage cannot provide. |
+| End-to-End Learning for Self-Driving Cars (Bojarski et al., 2016) | Off-center cameras plus viewpoint shifts, with steering labels corrected analytically. MIMIC generalizes this from a fixed camera pair to an arbitrary metric SE(2) maneuver, and regenerates the full trajectory label rather than a single steering value. |
+| ChauffeurNet (Bansal, Krizhevsky & Ogale, RSS 2019) | Synthesizes perturbed trajectories so the policy sees recovery. Perturbs a mid-level abstraction; MIMIC perturbs the pixels, so the policy sees what being off-course actually looks like. |
+
+**Generative view synthesis for data expansion**
+
+| Work | Relation |
+|---|---|
+| [TrajectoryCrafter](https://github.com/TrajectoryCrafter/TrajectoryCrafter) (ICCV 2025) | The view synthesis backbone here — used unmodified as a submodule. |
+| [DepthCrafter](https://github.com/Tencent/DepthCrafter) (CVPR 2025) | Temporally consistent video depth; supplies the geometry inside TrajectoryCrafter, and the reason each clip needs its own metric scale. |
+| Generative Camera Dolly (Van Hoorick et al., ECCV 2024) | Diffusion-based novel-view synthesis of dynamic scenes from monocular video. |
+| UniSim (CVPR 2023), NeuRAD (CVPR 2024) | Reconstruction-based sensor simulation for driving. Higher fidelity where a multi-sensor rig and repeated passes over the same street exist — neither of which sidewalk fleet footage offers. |
+| [Vista](https://github.com/OpenDriveLab/Vista) (NeurIPS 2024) | High-fidelity driving world model with action controllability; predicts futures rather than re-rendering a recorded past under a changed trajectory. |
+
+**Appearance-level augmentation**
+
+| Work | Relation |
+|---|---|
+| [Light-A-Video](https://github.com/bcmi/Light-A-Video) (ICCV 2025) | The relighting backbone here — used unmodified as a submodule. |
+| [IC-Light](https://github.com/lllyasviel/IC-Light) | The image relighting model Light-A-Video lifts to video. |
+
+What MIMIC adds is the combination: the same recorded clip expanded along *both*
+axes — relit for appearance diversity, re-rendered for action diversity — with the
+action labels regenerated in metric units from the maneuver itself rather than
+heuristically re-derived from the new video.
 
 ## Citation
 
