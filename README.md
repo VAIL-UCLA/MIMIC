@@ -368,13 +368,13 @@ the label schema, the two modes and the `--scale` calibration.
 
 ## Related Work
 
-- [GNM](https://sites.google.com/view/drive-any-robot)
-- [ViNT](https://general-navigation-models.github.io/vint/)
-- [NoMaD](https://general-navigation-models.github.io/nomad/)
-- [CityWalker](https://ai4ce.github.io/CityWalker/)
-- [NavDP](https://wzcai99.github.io/navigation-diffusion-policy.github.io/)
-- [S2E](https://vail.cs.ucla.edu/S2E/)
-- [FlowPilot](https://vail.cs.ucla.edu/FlowPilot/)
+- [(GNM) A General Navigation Model to Drive Any Robot](https://sites.google.com/view/drive-any-robot)
+- [(ViNT) A Foundation Model for Visual Navigation](https://general-navigation-models.github.io/vint/)
+- [(NoMaD) Goal Masked Diffusion Policies for Navigation and Exploration](https://general-navigation-models.github.io/nomad/)
+- [(CityWalker) Learning Embodied Urban Navigation from Web-Scale Videos](https://ai4ce.github.io/CityWalker/)
+- [(NavDP) Learning Sim-to-Real Navigation Diffusion Policy with Privileged Information Guidance](https://wzcai99.github.io/navigation-diffusion-policy.github.io/)
+- [(S2E) From Seeing to Experiencing: Scaling Navigation Foundation Models with Reinforcement Learning](https://vail.cs.ucla.edu/S2E/)
+- [(FlowPilot) From Imitation to Alignment: Human-Preference Flow Policies for Long-Horizon Sidewalk Navigation](https://vail.cs.ucla.edu/FlowPilot/)
 
 ## Citation
 
