@@ -22,11 +22,6 @@ MIMIC is a **goal-free, long-context** sidewalk navigation policy: it takes a sh
 **Planned**
 
 - [ ] Training code and PyTorch checkpoints
-- [ ] Training corpus
-- [ ] Open-loop evaluation
-- [ ] Closed-loop evaluation in [URBAN-SIM](https://github.com/metadriverse/urban-sim)
-- [ ] TensorRT export and ROS deployment node
-- [ ] Depth, normal and flow modalities for the sample clips
 
 ## Installation
 
