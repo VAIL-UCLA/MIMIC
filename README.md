@@ -6,8 +6,6 @@ Official implementation of **"Learning Sidewalk Autopilot from Multi-Scale Imita
 [![ICRA](https://img.shields.io/badge/ICRA-2026-orange)](https://arxiv.org/abs/2603.22527)
 [![Model Zoo](https://img.shields.io/badge/%F0%9F%A4%97-Model%20Zoo-yellow)](https://huggingface.co/UCLA-VAIL/Navigation-Model-Zoo-Public)
 
-MIMIC is a **goal-free, long-context** sidewalk navigation policy: it takes a short history of RGB frames and predicts a local trajectory for autonomous sidewalk driving.
-
 ## Release Plan
 
 **Released**
